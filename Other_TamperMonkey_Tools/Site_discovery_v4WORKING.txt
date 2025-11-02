@@ -1,0 +1,1909 @@
+// ==UserScript==
+// @name         Enhanced Site Discovery Tool Pro v4.0
+// @namespace    https://example.local/sitediscovery-pro
+// @version      4.0
+// @description  Professional site structure discovery with enhanced interactivity, hover previews, and robust error handling
+// @match        *://*/*
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_xmlhttpRequest
+// @grant        GM_download
+// @connect      *
+// @run-at       document-end
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    // ==== CONFIGURATION ====
+    const CONFIG = {
+        TOOL_NAME: "Site Discovery Pro v4.0",
+        UI_ROOT_ID: 'sdp-ui-root-v4',
+        STORAGE_PREFIX: 'sdp_v4_',
+        CHUNK_SIZE: 100,
+        MAX_RECURSION_DEPTH: 50,
+        CACHE_DURATION_DAYS: 30,
+        DEBOUNCE_SAVE_MS: 3000,
+        MAX_PREVIEW_SIZE: 5000,
+        HOVER_DELAY_MS: 1000,
+        STANDARD_GLOBALS_COUNT: 1000,
+        MAX_RETRIES: 3
+    };
+
+    // ==== UTILITY FUNCTIONS ====
+    const Utils = {
+        escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        },
+
+        formatFileSize(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        },
+
+        debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        },
+
+        async retry(fn, maxRetries = CONFIG.MAX_RETRIES) {
+            for (let i = 0; i <= maxRetries; i++) {
+                try {
+                    return await fn();
+                } catch (error) {
+                    if (i === maxRetries) throw error;
+                    await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, i)));
+                }
+            }
+        },
+
+        safeJSONParse(str, fallback = null) {
+            try {
+                return JSON.parse(str);
+            } catch (e) {
+                console.warn('JSON parse failed:', e);
+                return fallback;
+            }
+        },
+
+        safeJSONStringify(obj, fallback = '{}') {
+            try {
+                return JSON.stringify(obj);
+            } catch (e) {
+                console.warn('JSON stringify failed:', e);
+                return fallback;
+            }
+        }
+    };
+
+    // ==== MEMORY-OPTIMIZED STORAGE WITH ENHANCED ERROR HANDLING ====
+    class ChunkedStorage {
+        constructor(domain) {
+            this.domain = domain.replace(/[^a-zA-Z0-9]/g, '_');
+            this.indexKey = `${CONFIG.STORAGE_PREFIX}index_${this.domain}`;
+            this.chunkPrefix = `${CONFIG.STORAGE_PREFIX}chunk_${this.domain}_`;
+            this.treeKey = `${CONFIG.STORAGE_PREFIX}tree_${this.domain}`;
+            this.metaKey = `${CONFIG.STORAGE_PREFIX}meta_${this.domain}`;
+            this.backupKey = `${CONFIG.STORAGE_PREFIX}backup_${this.domain}`;
+            this.initializeIndex();
+        }
+
+        initializeIndex() {
+            try {
+                const index = this.getIndex();
+                if (!index) {
+                    this.saveIndex({
+                        chunks: [],
+                        lastChunk: 0,
+                        created: Date.now(),
+                        lastUpdated: Date.now(),
+                        version: '4.0'
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to initialize index:', error);
+                this.recoverFromBackup();
+            }
+        }
+
+        getIndex() {
+            return Utils.retry(() => {
+                const data = GM_getValue(this.indexKey, null);
+                return data ? Utils.safeJSONParse(data) : null;
+            }).catch(() => null);
+        }
+
+        async saveIndex(index) {
+            try {
+                await Utils.retry(() => {
+                    GM_setValue(this.indexKey, Utils.safeJSONStringify(index));
+                    // Create backup
+                    GM_setValue(this.backupKey, Utils.safeJSONStringify(index));
+                });
+            } catch (error) {
+                console.error('Failed to save index:', error);
+            }
+        }
+
+        async addData(type, items) {
+            if (!Array.isArray(items) || items.length === 0) return;
+
+            try {
+                const index = await this.getIndex() || this.createFallbackIndex();
+                const chunkId = `${type}_${index.lastChunk}`;
+                let chunkKey = this.chunkPrefix + chunkId;
+
+                let chunk = await this.getChunk(chunkKey) || {
+                    type,
+                    items: [],
+                    created: Date.now()
+                };
+
+                for (const item of items) {
+                    if (chunk.items.length >= CONFIG.CHUNK_SIZE) {
+                        await this.saveChunk(chunkKey, chunk);
+                        if (!index.chunks.includes(chunkId)) {
+                            index.chunks.push(chunkId);
+                        }
+                        index.lastChunk++;
+
+                        const newChunkId = `${type}_${index.lastChunk}`;
+                        chunkKey = this.chunkPrefix + newChunkId;
+                        chunk = { type, items: [], created: Date.now() };
+                    }
+                    chunk.items.push(item);
+                }
+
+                await this.saveChunk(chunkKey, chunk);
+                if (!index.chunks.includes(chunkId)) {
+                    index.chunks.push(chunkId);
+                }
+
+                index.lastUpdated = Date.now();
+                await this.saveIndex(index);
+            } catch (error) {
+                console.error('Failed to add data:', error);
+            }
+        }
+
+        async getChunk(key) {
+            try {
+                return await Utils.retry(() => {
+                    const data = GM_getValue(key, null);
+                    return data ? Utils.safeJSONParse(data) : null;
+                });
+            } catch (error) {
+                console.warn('Failed to get chunk:', key, error);
+                return null;
+            }
+        }
+
+        async saveChunk(key, chunk) {
+            try {
+                await Utils.retry(() => {
+                    GM_setValue(key, Utils.safeJSONStringify(chunk));
+                });
+            } catch (error) {
+                console.error('Failed to save chunk:', key, error);
+            }
+        }
+
+        async getAllData(type) {
+            try {
+                const index = await this.getIndex();
+                if (!index || !index.chunks) return [];
+
+                const results = [];
+                const chunkPromises = index.chunks
+                .filter(chunkId => chunkId.startsWith(type))
+                .map(async chunkId => {
+                    const chunk = await this.getChunk(this.chunkPrefix + chunkId);
+                    return chunk?.items || [];
+                });
+
+                const chunkResults = await Promise.all(chunkPromises);
+                chunkResults.forEach(items => results.push(...items));
+
+                return results;
+            } catch (error) {
+                console.error('Failed to get all data:', error);
+                return [];
+            }
+        }
+
+        async saveTree(tree) {
+            try {
+                await Utils.retry(() => {
+                    GM_setValue(this.treeKey, Utils.safeJSONStringify(tree));
+                });
+            } catch (error) {
+                console.error('Failed to save tree:', error);
+            }
+        }
+
+        async getTree() {
+            try {
+                const data = await Utils.retry(() => GM_getValue(this.treeKey, null));
+                return data ? Utils.safeJSONParse(data, {}) : {};
+            } catch (error) {
+                console.error('Failed to get tree:', error);
+                return {};
+            }
+        }
+
+        async saveMeta(meta) {
+            try {
+                await Utils.retry(() => {
+                    GM_setValue(this.metaKey, Utils.safeJSONStringify(meta));
+                });
+            } catch (error) {
+                console.error('Failed to save meta:', error);
+            }
+        }
+
+        async getMeta() {
+            try {
+                const data = await Utils.retry(() => GM_getValue(this.metaKey, null));
+                return data ? Utils.safeJSONParse(data, this.createFallbackMeta()) : this.createFallbackMeta();
+            } catch (error) {
+                console.error('Failed to get meta:', error);
+                return this.createFallbackMeta();
+            }
+        }
+
+        createFallbackIndex() {
+            return {
+                chunks: [],
+                lastChunk: 0,
+                created: Date.now(),
+                lastUpdated: Date.now(),
+                version: '4.0'
+            };
+        }
+
+        createFallbackMeta() {
+            return {
+                uniqueGlobals: {},
+                shadowDoms: [],
+                webpackModules: [],
+                statistics: {
+                    totalElements: 0,
+                    totalUrls: 0,
+                    shadowRoots: 0,
+                    uniqueGlobals: 0,
+                    timestamp: Date.now()
+                }
+            };
+        }
+
+        recoverFromBackup() {
+            try {
+                const backup = GM_getValue(this.backupKey, null);
+                if (backup) {
+                    GM_setValue(this.indexKey, backup);
+                    console.log('Recovered from backup');
+                }
+            } catch (error) {
+                console.error('Failed to recover from backup:', error);
+            }
+        }
+
+        isExpired() {
+            try {
+                const index = this.getIndex();
+                if (!index) return true;
+                const age = Date.now() - index.created;
+                return age > CONFIG.CACHE_DURATION_DAYS * 24 * 60 * 60 * 1000;
+            } catch (error) {
+                return true;
+            }
+        }
+
+        async clear() {
+            try {
+                const index = await this.getIndex();
+                if (index?.chunks) {
+                    await Promise.all(index.chunks.map(chunkId =>
+                                                       Utils.retry(() => GM_deleteValue(this.chunkPrefix + chunkId))
+                                                      ));
+                }
+
+                await Promise.all([
+                    Utils.retry(() => GM_deleteValue(this.indexKey)),
+                    Utils.retry(() => GM_deleteValue(this.treeKey)),
+                    Utils.retry(() => GM_deleteValue(this.metaKey)),
+                    Utils.retry(() => GM_deleteValue(this.backupKey))
+                ]);
+
+                this.initializeIndex();
+            } catch (error) {
+                console.error('Failed to clear storage:', error);
+            }
+        }
+    }
+
+    // ==== DISCOVERY ENGINE WITH ENHANCED PROTECTION ====
+    class SafeDiscoveryEngine {
+        constructor(storage) {
+            this.storage = storage;
+            this.visitedElements = new WeakSet();
+            this.visitedUrls = new Set();
+            this.recursionDepth = 0;
+            this.discoveryQueue = [];
+            this.processing = false;
+            this.shadowRoots = new Set();
+            this.uniqueGlobals = new Map();
+            this.standardGlobals = this.captureStandardGlobals();
+            this.saveTimeout = null;
+            this.abortController = null;
+        }
+
+        captureStandardGlobals() {
+            try {
+                const iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                document.body.appendChild(iframe);
+                const standardKeys = new Set(Object.keys(iframe.contentWindow));
+                document.body.removeChild(iframe);
+                return standardKeys;
+            } catch (error) {
+                console.warn('Failed to capture standard globals:', error);
+                return new Set();
+            }
+        }
+
+        async startDiscovery() {
+            if (this.processing) {
+                console.log('Discovery already in progress');
+                return;
+            }
+
+            this.processing = true;
+            this.abortController = new AbortController();
+
+            try {
+                console.log('Starting enhanced discovery...');
+                await this.discoverWithLoopProtection(document.documentElement);
+                await this.discoverShadowDOMs();
+                await this.discoverUniqueGlobals();
+                await this.processQueue();
+                this.scheduleSave();
+                console.log('Discovery completed successfully');
+            } catch (error) {
+                console.error('Discovery failed:', error);
+            } finally {
+                this.processing = false;
+                this.abortController = null;
+            }
+        }
+
+        async discoverWithLoopProtection(element, depth = 0) {
+            if (this.abortController?.signal?.aborted) return;
+
+            if (depth > CONFIG.MAX_RECURSION_DEPTH) {
+                console.warn('Max recursion depth reached at:', element);
+                return;
+            }
+
+            if (!element || this.visitedElements.has(element)) {
+                return;
+            }
+
+            this.visitedElements.add(element);
+
+            try {
+                // Discover resources
+                this.discoverElementResources(element);
+
+                // Check for shadow root
+                if (element.shadowRoot && !this.shadowRoots.has(element.shadowRoot)) {
+                    this.shadowRoots.add(element.shadowRoot);
+                    this.discoveryQueue.push({
+                        type: 'shadow',
+                        data: {
+                            host: element.tagName,
+                            id: element.id,
+                            mode: element.shadowRoot.mode
+                        }
+                    });
+                    await this.discoverWithLoopProtection(element.shadowRoot, depth + 1);
+                }
+
+                // Process children
+                if (element.children) {
+                    for (let child of element.children) {
+                        if (this.abortController?.signal?.aborted) break;
+                        await this.discoverWithLoopProtection(child, depth + 1);
+
+                        // Yield periodically to prevent freezing
+                        if (this.discoveryQueue.length > CONFIG.CHUNK_SIZE) {
+                            await this.processQueue();
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('Error processing element:', error);
+            }
+        }
+
+        discoverElementResources(element) {
+            try {
+                const urls = [];
+
+                // Get various URL attributes
+                ['href', 'src', 'data', 'action'].forEach(attr => {
+                    try {
+                        const value = element[attr] || element.getAttribute(attr);
+                        if (value && typeof value === 'string' && !value.startsWith('javascript:')) {
+                            urls.push(value);
+                        }
+                    } catch (e) {
+                        // Skip inaccessible attributes
+                    }
+                });
+
+                // Check data attributes
+                ['data-src', 'data-href', 'data-url', 'data-original'].forEach(attr => {
+                    try {
+                        const value = element.getAttribute(attr);
+                        if (value) urls.push(value);
+                    } catch (e) {
+                        // Skip inaccessible attributes
+                    }
+                });
+
+                // Process found URLs
+                urls.forEach(url => {
+                    try {
+                        const normalizedUrl = new URL(url, window.location.origin).href;
+                        if (!this.visitedUrls.has(normalizedUrl)) {
+                            this.visitedUrls.add(normalizedUrl);
+                            this.discoveryQueue.push({
+                                type: element.tagName === 'SCRIPT' ? 'script' : 'resource',
+                                url: normalizedUrl,
+                                element: element.tagName,
+                                attributes: this.getElementAttributes(element)
+                            });
+                        }
+                    } catch (e) {
+                        // Invalid URL
+                    }
+                });
+            } catch (error) {
+                console.warn('Error discovering element resources:', error);
+            }
+        }
+
+        getElementAttributes(element) {
+            try {
+                const attrs = {};
+                if (element.attributes) {
+                    for (let attr of element.attributes) {
+                        if (attr.name && attr.value) {
+                            attrs[attr.name] = attr.value.substring(0, 100); // Limit length
+                        }
+                    }
+                }
+                return attrs;
+            } catch (error) {
+                return {};
+            }
+        }
+
+        async discoverShadowDOMs() {
+            try {
+                const allElements = document.querySelectorAll('*');
+
+                for (let element of allElements) {
+                    if (this.abortController?.signal?.aborted) break;
+
+                    try {
+                        if (element.shadowRoot && !this.shadowRoots.has(element.shadowRoot)) {
+                            this.shadowRoots.add(element.shadowRoot);
+                            this.discoveryQueue.push({
+                                type: 'shadow',
+                                data: {
+                                    host: element.tagName,
+                                    id: element.id,
+                                    mode: element.shadowRoot.mode,
+                                    innerHTML: element.shadowRoot.innerHTML?.substring(0, 200) || ''
+                                }
+                            });
+                            await this.discoverWithLoopProtection(element.shadowRoot, 0);
+                        }
+                    } catch (e) {
+                        // Access denied
+                    }
+                }
+            } catch (error) {
+                console.warn('Error discovering shadow DOMs:', error);
+            }
+        }
+
+        async discoverUniqueGlobals() {
+            try {
+                for (let key in window) {
+                    if (this.abortController?.signal?.aborted) break;
+
+                    if (!this.standardGlobals.has(key) &&
+                        !key.startsWith('webkit') &&
+                        !key.startsWith('moz') &&
+                        !key.startsWith('chrome') &&
+                        !key.startsWith(CONFIG.STORAGE_PREFIX)) {
+                        try {
+                            const value = window[key];
+                            const type = typeof value;
+
+                            if (type !== 'function' || this.isInterestingFunction(value)) {
+                                this.uniqueGlobals.set(key, {
+                                    type,
+                                    sample: this.getSafeValue(value),
+                                    constructor: value?.constructor?.name
+                                });
+                            }
+                        } catch (e) {
+                            // Access denied
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('Error discovering globals:', error);
+            }
+        }
+
+        isInterestingFunction(func) {
+            try {
+                const str = func.toString();
+                return !str.includes('[native code]') && str.length > 50;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        getSafeValue(value, maxLength = 100) {
+            try {
+                const type = typeof value;
+                if (value === null || value === undefined) return value;
+                if (type === 'string') return value.substring(0, maxLength);
+                if (type === 'number' || type === 'boolean') return value;
+                if (Array.isArray(value)) return `Array(${value.length})`;
+                if (type === 'object') return `Object(${Object.keys(value).length} keys)`;
+                return type;
+            } catch (e) {
+                return 'inaccessible';
+            }
+        }
+
+        async processQueue() {
+            const chunks = {
+                resources: [],
+                scripts: [],
+                shadows: []
+            };
+
+            try {
+                while (this.discoveryQueue.length > 0) {
+                    if (this.abortController?.signal?.aborted) break;
+
+                    const batch = this.discoveryQueue.splice(0, CONFIG.CHUNK_SIZE);
+
+                    for (let item of batch) {
+                        switch (item.type) {
+                            case 'resource':
+                                chunks.resources.push({
+                                    url: item.url,
+                                    element: item.element,
+                                    attributes: item.attributes
+                                });
+                                break;
+                            case 'script':
+                                chunks.scripts.push({
+                                    url: item.url,
+                                    element: item.element,
+                                    attributes: item.attributes
+                                });
+                                break;
+                            case 'shadow':
+                                chunks.shadows.push(item.data);
+                                break;
+                        }
+                    }
+
+                    // Save chunks
+                    for (let [type, items] of Object.entries(chunks)) {
+                        if (items.length > 0) {
+                            await this.storage.addData(type, items);
+                            chunks[type] = [];
+                        }
+                    }
+
+                    // Yield to browser
+                    await new Promise(resolve => setTimeout(resolve, 10));
+                }
+            } catch (error) {
+                console.error('Error processing queue:', error);
+            }
+        }
+
+        scheduleSave() {
+            clearTimeout(this.saveTimeout);
+            this.saveTimeout = setTimeout(() => this.saveDiscoveries(), CONFIG.DEBOUNCE_SAVE_MS);
+        }
+
+        async saveDiscoveries() {
+            try {
+                const tree = await this.buildTree();
+                await this.storage.saveTree(tree);
+
+                const meta = {
+                    uniqueGlobals: Object.fromEntries(this.uniqueGlobals),
+                    shadowDoms: Array.from(this.shadowRoots).map(root => ({
+                        host: root.host?.tagName,
+                        mode: root.mode
+                    })),
+                    statistics: {
+                        totalElements: this.visitedElements.size || 0,
+                        totalUrls: this.visitedUrls.size,
+                        shadowRoots: this.shadowRoots.size,
+                        uniqueGlobals: this.uniqueGlobals.size,
+                        timestamp: Date.now()
+                    }
+                };
+                await this.storage.saveMeta(meta);
+            } catch (error) {
+                console.error('Failed to save discoveries:', error);
+            }
+        }
+
+        async buildTree() {
+            try {
+                const tree = {};
+                const [resources, scripts] = await Promise.all([
+                    this.storage.getAllData('resources'),
+                    this.storage.getAllData('scripts')
+                ]);
+
+                const allUrls = [...resources, ...scripts].map(item =>
+                                                               typeof item === 'string' ? item : item.url
+                                                              ).filter(Boolean);
+
+                allUrls.forEach(url => {
+                    try {
+                        const urlObj = new URL(url, location.origin);
+                        if (urlObj.hostname !== location.hostname) return;
+
+                        const parts = urlObj.pathname.split('/').filter(p => p);
+
+                        let current = tree;
+                        parts.forEach((part, index) => {
+                            const isLast = index === parts.length - 1;
+                            const fileExt = isLast ? this.getFileExtension(part) : null;
+
+                            if (!current[part]) {
+                                current[part] = {
+                                    type: isLast ? 'file' : 'directory',
+                                    extension: fileExt,
+                                    url: urlObj.href,
+                                    path: '/' + parts.slice(0, index + 1).join('/'),
+                                    children: isLast ? undefined : {}
+                                };
+                            }
+
+                            if (!isLast && current[part].children) {
+                                current = current[part].children;
+                            }
+                        });
+                    } catch (e) {
+                        // Invalid URL
+                    }
+                });
+
+                return this.sortTree(tree);
+            } catch (error) {
+                console.error('Failed to build tree:', error);
+                return {};
+            }
+        }
+
+        sortTree(tree) {
+            const sorted = {};
+            const entries = Object.entries(tree);
+
+            entries.sort((a, b) => {
+                const aIsDir = a[1].type === 'directory';
+                const bIsDir = b[1].type === 'directory';
+
+                if (aIsDir && !bIsDir) return -1;
+                if (!aIsDir && bIsDir) return 1;
+                return a[0].localeCompare(b[0]);
+            });
+
+            entries.forEach(([key, value]) => {
+                sorted[key] = value;
+                if (value.children) {
+                    sorted[key].children = this.sortTree(value.children);
+                }
+            });
+
+            return sorted;
+        }
+
+        getFileExtension(filename) {
+            const match = filename.match(/\.([^.]+)$/);
+            return match ? match[1].toLowerCase() : null;
+        }
+    }
+
+    // ==== ENHANCED UI WITH PROFESSIONAL STYLING ====
+    class ProfessionalUI {
+        constructor(engine, storage) {
+            this.engine = engine;
+            this.storage = storage;
+            this.root = null;
+            this.currentView = 'tree';
+            this.previewCache = new Map();
+            this.currentPreview = null;
+            this.hoverTimeout = null;
+            this.activeNode = null;
+        }
+
+        injectStyles() {
+            const style = document.createElement('style');
+            style.textContent = `
+        /* PROFESSIONAL DARK THEME */
+        :root {
+          --sdp-bg-primary: #0d1117;
+          --sdp-bg-secondary: #161b22;
+          --sdp-bg-tertiary: #21262d;
+          --sdp-text-primary: #f0f6fc;
+          --sdp-text-secondary: #8b949e;
+          --sdp-text-muted: #656d76;
+          --sdp-accent-blue: #58a6ff;
+          --sdp-accent-purple: #a5a5ff;
+          --sdp-accent-green: #7ee787;
+          --sdp-accent-orange: #ffa657;
+          --sdp-accent-red: #f85149;
+          --sdp-border-default: #30363d;
+          --sdp-border-muted: #21262d;
+          --sdp-shadow-default: 0 8px 24px rgba(1, 4, 9, 0.8);
+          --sdp-shadow-large: 0 16px 32px rgba(1, 4, 9, 0.9);
+          --sdp-glow-blue: 0 0 0 1px rgba(88, 166, 255, 0.4);
+          --sdp-glow-purple: 0 0 0 1px rgba(165, 165, 255, 0.4);
+          --sdp-transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        #${CONFIG.UI_ROOT_ID} {
+          position: fixed;
+          right: 20px;
+          bottom: 20px;
+          width: 720px;
+          max-height: 85vh;
+          background: var(--sdp-bg-primary);
+          border: 1px solid var(--sdp-border-default);
+          border-radius: 12px;
+          box-shadow: var(--sdp-shadow-large);
+          z-index: 2147483647;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+          color: var(--sdp-text-primary);
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+          transition: var(--sdp-transition);
+          backdrop-filter: blur(10px);
+        }
+
+        #${CONFIG.UI_ROOT_ID}::before {
+          content: '';
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          height: 1px;
+          background: linear-gradient(90deg, transparent, var(--sdp-accent-blue), transparent);
+        }
+
+        #${CONFIG.UI_ROOT_ID}.minimized {
+          width: 64px;
+          height: 64px;
+          border-radius: 50%;
+          background: var(--sdp-bg-secondary);
+          box-shadow: var(--sdp-glow-purple), var(--sdp-shadow-default);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .warning-banner {
+          background: linear-gradient(135deg, var(--sdp-accent-red), #d73a49);
+          color: white;
+          padding: 6px 16px;
+          text-align: center;
+          font-size: 10px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .header {
+          background: var(--sdp-bg-secondary);
+          padding: 16px 20px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          border-bottom: 1px solid var(--sdp-border-default);
+          cursor: move;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .header h2 {
+          margin: 0;
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--sdp-text-primary);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .header h2::before {
+          content: '🔧';
+          font-size: 16px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .header .controls {
+          display: flex;
+          gap: 6px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .header button {
+          background: var(--sdp-bg-tertiary);
+          border: 1px solid var(--sdp-border-default);
+          color: var(--sdp-text-secondary);
+          padding: 6px 10px;
+          border-radius: 6px;
+          cursor: pointer;
+          font-size: 11px;
+          font-weight: 500;
+          transition: var(--sdp-transition);
+          min-width: 28px;
+          height: 28px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .header button:hover {
+          background: var(--sdp-accent-blue);
+          border-color: var(--sdp-accent-blue);
+          color: white;
+          transform: translateY(-1px);
+          box-shadow: 0 4px 12px rgba(88, 166, 255, 0.4);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tabs {
+          background: var(--sdp-bg-secondary);
+          padding: 8px 20px;
+          display: flex;
+          gap: 4px;
+          border-bottom: 1px solid var(--sdp-border-default);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tabs button {
+          background: transparent;
+          border: none;
+          color: var(--sdp-text-secondary);
+          padding: 8px 14px;
+          border-radius: 6px;
+          cursor: pointer;
+          font-size: 12px;
+          font-weight: 500;
+          transition: var(--sdp-transition);
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tabs button:hover {
+          background: var(--sdp-bg-tertiary);
+          color: var(--sdp-text-primary);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tabs button.active {
+          background: var(--sdp-bg-tertiary);
+          color: var(--sdp-accent-blue);
+          box-shadow: var(--sdp-glow-blue);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .content {
+          background: var(--sdp-bg-primary);
+          flex: 1;
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+          position: relative;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-view {
+          padding: 16px;
+          overflow-y: auto;
+          flex: 1;
+          font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+          font-size: 13px;
+          line-height: 1.5;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node {
+          margin-left: 20px;
+          position: relative;
+          user-select: none;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node-content {
+          display: flex;
+          align-items: center;
+          padding: 4px 8px;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: var(--sdp-transition);
+          position: relative;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node-content:hover {
+          background: var(--sdp-bg-tertiary);
+          color: var(--sdp-text-primary);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.directory > .tree-node-content {
+          font-weight: 500;
+          color: var(--sdp-accent-blue);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.directory > .tree-node-content::before {
+          content: '📁';
+          margin-right: 8px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.directory.open > .tree-node-content::before {
+          content: '📂';
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.file > .tree-node-content {
+          color: var(--sdp-text-primary);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.file > .tree-node-content::before {
+          content: '📄';
+          margin-right: 8px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.file.script > .tree-node-content {
+          color: var(--sdp-accent-green);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.file.script > .tree-node-content::before {
+          content: '📜';
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.file.style > .tree-node-content {
+          color: var(--sdp-accent-purple);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.file.style > .tree-node-content::before {
+          content: '🎨';
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.file.image > .tree-node-content {
+          color: var(--sdp-accent-orange);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.file.image > .tree-node-content::before {
+          content: '🖼️';
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.shadow {
+          color: var(--sdp-accent-purple);
+          font-style: italic;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.shadow > .tree-node-content::before {
+          content: '👻';
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.sensitive > .tree-node-content {
+          color: var(--sdp-accent-red) !important;
+          animation: pulse-glow 2s infinite;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node-children {
+          margin-top: 2px;
+          display: none;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .tree-node.open > .tree-node-children {
+          display: block;
+        }
+
+        @keyframes pulse-glow {
+          0%, 100% { box-shadow: 0 0 5px rgba(248, 81, 73, 0.3); }
+          50% { box-shadow: 0 0 15px rgba(248, 81, 73, 0.6); }
+        }
+
+        #${CONFIG.UI_ROOT_ID} .preview-tooltip {
+          position: absolute;
+          background: var(--sdp-bg-secondary);
+          border: 1px solid var(--sdp-border-default);
+          border-radius: 8px;
+          padding: 12px;
+          max-width: 400px;
+          max-height: 300px;
+          overflow: auto;
+          box-shadow: var(--sdp-shadow-default);
+          z-index: 1000;
+          font-size: 12px;
+          line-height: 1.4;
+          backdrop-filter: blur(10px);
+          pointer-events: none;
+          opacity: 0;
+          transform: translateY(10px);
+          transition: opacity 0.2s, transform 0.2s;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .preview-tooltip.visible {
+          opacity: 1;
+          transform: translateY(0);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .preview-tooltip .preview-header {
+          font-weight: 600;
+          margin-bottom: 8px;
+          padding-bottom: 8px;
+          border-bottom: 1px solid var(--sdp-border-muted);
+          color: var(--sdp-accent-blue);
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .preview-tooltip .preview-body {
+          color: var(--sdp-text-secondary);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .preview-tooltip .preview-meta {
+          margin-top: 8px;
+          padding-top: 8px;
+          border-top: 1px solid var(--sdp-border-muted);
+          font-size: 11px;
+          color: var(--sdp-text-muted);
+        }
+
+        #${CONFIG.UI_ROOT_ID} .preview-tooltip .preview-content {
+          background: var(--sdp-bg-primary);
+          border-radius: 4px;
+          padding: 8px;
+          margin-top: 8px;
+          font-family: 'SF Mono', Monaco, monospace;
+          font-size: 11px;
+          white-space: pre-wrap;
+          word-break: break-word;
+          max-height: 150px;
+          overflow: auto;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .stats-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+          gap: 12px;
+          padding: 20px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .stat-card {
+          background: var(--sdp-bg-secondary);
+          border: 1px solid var(--sdp-border-default);
+          border-radius: 8px;
+          padding: 16px;
+          text-align: center;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .stat-card h3 {
+          margin: 0 0 8px 0;
+          font-size: 12px;
+          color: var(--sdp-text-secondary);
+          font-weight: 500;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .stat-card .value {
+          font-size: 24px;
+          font-weight: 700;
+          color: var(--sdp-accent-blue);
+          margin-bottom: 4px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} .loading {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 40px;
+          color: var(--sdp-text-muted);
+          font-style: italic;
+        }
+
+        /* Responsive design */
+        @media (max-width: 768px) {
+          #${CONFIG.UI_ROOT_ID} {
+            right: 10px;
+            bottom: 10px;
+            left: 10px;
+            width: auto;
+            max-height: 90vh;
+          }
+        }
+
+        /* Minimized state */
+        #${CONFIG.UI_ROOT_ID}.minimized .warning-banner,
+        #${CONFIG.UI_ROOT_ID}.minimized .tabs,
+        #${CONFIG.UI_ROOT_ID}.minimized .content,
+        #${CONFIG.UI_ROOT_ID}.minimized .header h2,
+        #${CONFIG.UI_ROOT_ID}.minimized .header .controls button:not(.minimize-btn) {
+          display: none;
+        }
+
+        #${CONFIG.UI_ROOT_ID}.minimized .header {
+          padding: 20px;
+          border: none;
+          justify-content: center;
+        }
+
+        #${CONFIG.UI_ROOT_ID}.minimized .header .controls {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+        }
+
+        /* Scrollbar styling */
+        #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar {
+          width: 6px;
+          height: 6px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar-track {
+          background: var(--sdp-bg-secondary);
+        }
+
+        #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar-thumb {
+          background: var(--sdp-border-default);
+          border-radius: 3px;
+        }
+
+        #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar-thumb:hover {
+          background: var(--sdp-text-muted);
+        }
+      `;
+            document.head.appendChild(style);
+        }
+
+        async createUI() {
+            const root = document.createElement('div');
+            root.id = CONFIG.UI_ROOT_ID;
+            root.innerHTML = `
+        <div class="warning-banner">
+          ⚠️ Red Team Tool - Authorized Use Only ⚠️
+        </div>
+        <div class="header">
+          <h2>${CONFIG.TOOL_NAME}</h2>
+          <div class="controls">
+            <button class="refresh-btn" title="Refresh Discovery">🔄</button>
+            <button class="export-btn" title="Export Data">💾</button>
+            <button class="clear-btn" title="Clear Data">🗑️</button>
+            <button class="minimize-btn" title="Minimize">_</button>
+            <button class="close-btn" title="Close">✕</button>
+          </div>
+        </div>
+        <div class="tabs">
+          <button class="tab-btn active" data-view="tree">🌳 Tree View</button>
+          <button class="tab-btn" data-view="rootmap">🗺️ Root Map</button>
+          <button class="tab-btn" data-view="stats">📊 Statistics</button>
+          <button class="tab-btn" data-view="unique">🔮 Unique Vars</button>
+        </div>
+        <div class="content">
+          <div id="view-container"></div>
+        </div>
+      `;
+          document.body.appendChild(root);
+          this.root = root;
+      }
+
+        attachEventListeners() {
+            const root = this.root;
+
+            // Header controls
+            root.querySelector('.refresh-btn').onclick = () => this.refreshDiscovery();
+            root.querySelector('.export-btn').onclick = () => this.exportData();
+            root.querySelector('.clear-btn').onclick = () => this.clearData();
+            root.querySelector('.minimize-btn').onclick = () => root.classList.toggle('minimized');
+            root.querySelector('.close-btn').onclick = () => root.remove();
+
+            // Tab switching
+            root.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.onclick = () => {
+                    root.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    this.currentView = btn.dataset.view;
+                    this.renderView();
+                };
+            });
+
+            // Global click handler to hide previews
+            document.addEventListener('click', (e) => {
+                if (!root.contains(e.target)) {
+                    this.hidePreview();
+                }
+            });
+
+            // Make draggable
+            this.makeDraggable(root);
+        }
+
+        makeDraggable(element) {
+            const header = element.querySelector('.header');
+            let isDragging = false;
+            let startX, startY, initialX, initialY;
+
+            header.addEventListener('mousedown', (e) => {
+                if (e.target.tagName === 'BUTTON') return;
+                isDragging = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                const rect = element.getBoundingClientRect();
+                initialX = rect.left;
+                initialY = rect.top;
+                document.body.style.userSelect = 'none';
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                element.style.left = `${initialX + dx}px`;
+                element.style.top = `${initialY + dy}px`;
+                element.style.right = 'auto';
+                element.style.bottom = 'auto';
+            });
+
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+                document.body.style.userSelect = '';
+            });
+        }
+
+        async loadCachedTree() {
+            if (!this.storage.isExpired()) {
+                console.log('Loading cached tree data...');
+                await this.renderView();
+            } else {
+                console.log('Cache expired, starting fresh discovery...');
+                this.refreshDiscovery();
+            }
+        }
+
+        async renderView() {
+            const container = document.getElementById('view-container');
+            if (!container) return;
+
+            try {
+                switch (this.currentView) {
+                    case 'tree':
+                        await this.renderTreeView(container);
+                        break;
+                    case 'rootmap':
+                        await this.renderRootMapView(container);
+                        break;
+                    case 'stats':
+                        await this.renderStatsView(container);
+                        break;
+                    case 'unique':
+                        await this.renderUniqueVarsView(container);
+                        break;
+                }
+            } catch (error) {
+                console.error('Failed to render view:', error);
+                container.innerHTML = `<div class="loading">Error rendering view: ${error.message}</div>`;
+            }
+        }
+
+        async renderTreeView(container) {
+            const tree = await this.storage.getTree();
+
+            container.innerHTML = '<div class="tree-view" id="tree-container"></div>';
+            const treeContainer = container.querySelector('#tree-container');
+
+            if (Object.keys(tree).length === 0) {
+                treeContainer.innerHTML = '<div class="loading">No resources discovered yet. Click refresh to start discovery.</div>';
+                return;
+            }
+
+            const renderNode = (node, name, parent, path = '') => {
+                const nodeDiv = document.createElement('div');
+                nodeDiv.className = `tree-node ${node.type}`;
+
+                // Add file type classes
+                if (node.type === 'file' && node.extension) {
+                    if (['js', 'jsx', 'ts', 'tsx'].includes(node.extension)) {
+                        nodeDiv.classList.add('script');
+                    } else if (['css', 'scss', 'less'].includes(node.extension)) {
+                        nodeDiv.classList.add('style');
+                    } else if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(node.extension)) {
+                        nodeDiv.classList.add('image');
+                    }
+                }
+
+                // Check for sensitive paths
+                if (this.isSensitivePath(path + '/' + name)) {
+                    nodeDiv.classList.add('sensitive');
+                }
+
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'tree-node-content';
+                contentDiv.textContent = name;
+
+                // Store node data
+                contentDiv.dataset.nodePath = path + '/' + name;
+                contentDiv.dataset.nodeType = node.type;
+                contentDiv.dataset.nodeUrl = node.url || '';
+                contentDiv.dataset.nodeExtension = node.extension || '';
+
+                nodeDiv.appendChild(contentDiv);
+
+                if (node.type === 'directory') {
+                    const childContainer = document.createElement('div');
+                    childContainer.className = 'tree-node-children';
+                    nodeDiv.appendChild(childContainer);
+
+                    // Directory click handler
+                    contentDiv.onclick = (e) => {
+                        e.stopPropagation();
+                        const isOpen = nodeDiv.classList.toggle('open');
+
+                        // Recursive open with Ctrl key
+                        if (e.ctrlKey && isOpen) {
+                            this.recursiveOpen(childContainer);
+                        }
+                    };
+
+                    if (node.children) {
+                        Object.keys(node.children).forEach(childName => {
+                            renderNode(node.children[childName], childName, childContainer, path + '/' + name);
+                        });
+                    }
+                } else {
+                    // File click handler
+                    contentDiv.onclick = (e) => {
+                        e.stopPropagation();
+                        this.handleNodeClick(contentDiv, node);
+                    };
+                }
+
+                // Hover handlers for preview
+                this.attachHoverHandlers(contentDiv, node, name);
+
+                parent.appendChild(nodeDiv);
+            };
+
+            Object.keys(tree).forEach(name => {
+                renderNode(tree[name], name, treeContainer);
+            });
+        }
+
+        attachHoverHandlers(element, nodeData, name) {
+            let hoverTimer = null;
+
+            element.addEventListener('mouseenter', (e) => {
+                this.clearHoverTimer();
+                hoverTimer = setTimeout(() => {
+                    this.showPreview(element, nodeData, name, e);
+                }, CONFIG.HOVER_DELAY_MS);
+                this.hoverTimer = hoverTimer;
+            });
+
+            element.addEventListener('mouseleave', () => {
+                this.clearHoverTimer();
+                // Delay hiding to allow mouse to move to preview
+                setTimeout(() => this.hidePreview(), 300);
+            });
+        }
+
+        clearHoverTimer() {
+            if (this.hoverTimer) {
+                clearTimeout(this.hoverTimer);
+                this.hoverTimer = null;
+            }
+        }
+
+        async showPreview(element, nodeData, name, event) {
+            try {
+                this.hidePreview();
+
+                const tooltip = document.createElement('div');
+                tooltip.className = 'preview-tooltip';
+
+                // Position tooltip
+                const rect = element.getBoundingClientRect();
+                const rootRect = this.root.getBoundingClientRect();
+
+                tooltip.style.position = 'absolute';
+                tooltip.style.left = `${rect.right - rootRect.left + 10}px`;
+                tooltip.style.top = `${rect.top - rootRect.top}px`;
+
+                // Add initial content
+                tooltip.innerHTML = `
+          <div class="preview-header">
+            ${nodeData.type === 'directory' ? '📁' : '📄'} ${name}
+          </div>
+          <div class="preview-body">
+            <div class="loading">Loading preview...</div>
+          </div>
+        `;
+
+              this.root.querySelector('.content').appendChild(tooltip);
+              this.currentPreview = tooltip;
+
+              // Add hover handlers to tooltip
+              tooltip.addEventListener('mouseenter', () => this.clearHoverTimer());
+              tooltip.addEventListener('mouseleave', () => this.hidePreview());
+
+              // Adjust position if off-screen
+              this.adjustTooltipPosition(tooltip);
+
+              // Show tooltip
+              setTimeout(() => tooltip.classList.add('visible'), 10);
+
+              // Load content
+              await this.loadPreviewContent(tooltip, nodeData, name);
+
+          } catch (error) {
+              console.error('Failed to show preview:', error);
+              this.hidePreview();
+          }
+      }
+
+        adjustTooltipPosition(tooltip) {
+            const rect = tooltip.getBoundingClientRect();
+            const rootRect = this.root.getBoundingClientRect();
+
+            // Adjust horizontal position
+            if (rect.right > window.innerWidth) {
+                const currentLeft = parseInt(tooltip.style.left);
+                tooltip.style.left = `${currentLeft - rect.width - 20}px`;
+            }
+
+            // Adjust vertical position
+            if (rect.bottom > window.innerHeight) {
+                const currentTop = parseInt(tooltip.style.top);
+                tooltip.style.top = `${Math.max(10, currentTop - rect.height)}px`;
+            }
+        }
+
+        async loadPreviewContent(tooltip, nodeData, name) {
+            const bodyEl = tooltip.querySelector('.preview-body');
+
+            try {
+                if (nodeData.type === 'directory') {
+                    await this.loadDirectoryPreview(bodyEl, nodeData, name);
+                } else if (nodeData.url) {
+                    await this.loadFilePreview(bodyEl, nodeData, name);
+                } else {
+                    bodyEl.innerHTML = '<div>No preview available</div>';
+                }
+            } catch (error) {
+                bodyEl.innerHTML = `<div class="error">Preview failed: ${error.message}</div>`;
+            }
+        }
+
+        async loadDirectoryPreview(container, nodeData, name) {
+            const childCount = Object.keys(nodeData.children || {}).length;
+            const fileTypes = {};
+
+            // Count file types recursively
+            const countFileTypes = (node) => {
+                if (node.type === 'file') {
+                    const ext = node.extension || 'other';
+                    fileTypes[ext] = (fileTypes[ext] || 0) + 1;
+                } else if (node.children) {
+                    Object.values(node.children).forEach(countFileTypes);
+                }
+            };
+
+            countFileTypes(nodeData);
+
+            const typeList = Object.entries(fileTypes)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([ext, count]) => `${ext}: ${count}`)
+            .join(', ');
+
+            container.innerHTML = `
+        <div><strong>Type:</strong> Directory</div>
+        <div><strong>Items:</strong> ${childCount}</div>
+        ${typeList ? `<div><strong>File Types:</strong> ${typeList}</div>` : ''}
+        <div class="preview-meta">
+          Path: ${nodeData.path || name}
+        </div>
+      `;
+      }
+
+        async loadFilePreview(container, nodeData, name) {
+            try {
+                // Show file info immediately
+                container.innerHTML = `
+          <div><strong>Type:</strong> File</div>
+          <div><strong>Extension:</strong> ${nodeData.extension || 'none'}</div>
+          <div><strong>URL:</strong> <a href="${nodeData.url}" target="_blank" style="color: var(--sdp-accent-blue);">Open</a></div>
+          <div class="loading" style="margin-top: 8px;">Loading content...</div>
+        `;
+
+              // Fetch file content
+              const response = await Utils.retry(async () => {
+                  const res = await fetch(nodeData.url, {
+                      method: 'HEAD', // Use HEAD first to check size
+                      credentials: 'include'
+                  });
+                  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                  return res;
+              });
+
+              const contentLength = response.headers.get('content-length');
+              const contentType = response.headers.get('content-type') || 'unknown';
+
+              // Decide whether to fetch full content
+              const shouldFetchContent = !contentLength || parseInt(contentLength) < CONFIG.MAX_PREVIEW_SIZE;
+
+              let previewContent = '';
+              if (shouldFetchContent && this.isTextContent(contentType)) {
+                  try {
+                      const fullResponse = await fetch(nodeData.url, {
+                          method: 'GET',
+                          credentials: 'include'
+                      });
+
+                      if (fullResponse.ok) {
+                          let content = await fullResponse.text();
+                          if (content.length > CONFIG.MAX_PREVIEW_SIZE) {
+                              content = content.substring(0, CONFIG.MAX_PREVIEW_SIZE) + '\n\n[Truncated...]';
+                          }
+                          previewContent = `<div class="preview-content">${Utils.escapeHtml(content)}</div>`;
+                      }
+                  } catch (e) {
+                      previewContent = `<div class="error">Content fetch failed: ${e.message}</div>`;
+                  }
+              }
+
+              container.innerHTML = `
+          <div><strong>Type:</strong> File</div>
+          <div><strong>Extension:</strong> ${nodeData.extension || 'none'}</div>
+          <div><strong>Size:</strong> ${contentLength ? Utils.formatFileSize(parseInt(contentLength)) : 'unknown'}</div>
+          <div><strong>Content-Type:</strong> ${contentType}</div>
+          <div><strong>URL:</strong> <a href="${nodeData.url}" target="_blank" style="color: var(--sdp-accent-blue);">Open</a></div>
+          ${previewContent}
+          <div class="preview-meta">
+            Path: ${nodeData.path || name}
+          </div>
+        `;
+
+          } catch (error) {
+              container.innerHTML = `
+          <div class="error">
+            Preview failed: ${error.message}
+            <div style="margin-top: 8px;">
+              <a href="${nodeData.url}" target="_blank" style="color: var(--sdp-accent-blue);">Try opening directly</a>
+            </div>
+          </div>
+        `;
+      }
+      }
+
+        isTextContent(contentType) {
+            return contentType && (
+                contentType.includes('text/') ||
+                contentType.includes('application/json') ||
+                contentType.includes('application/javascript') ||
+                contentType.includes('application/xml') ||
+                contentType.includes('application/css')
+            );
+        }
+
+        hidePreview() {
+            if (this.currentPreview) {
+                this.currentPreview.classList.remove('visible');
+                setTimeout(() => {
+                    if (this.currentPreview) {
+                        this.currentPreview.remove();
+                        this.currentPreview = null;
+                    }
+                }, 200);
+            }
+        }
+
+        handleNodeClick(element, nodeData) {
+            // Handle clicks on tree nodes (files)
+            if (nodeData.type === 'file' && nodeData.url) {
+                // Open in new tab
+                window.open(nodeData.url, '_blank');
+            }
+        }
+
+        recursiveOpen(container, depth = 0) {
+            if (depth > 10) return; // Safety limit
+
+            const parentNode = container.closest('.tree-node');
+            if (parentNode) {
+                parentNode.classList.add('open');
+            }
+
+            container.querySelectorAll('.tree-node.directory').forEach(dirNode => {
+                dirNode.classList.add('open');
+                const childContainer = dirNode.querySelector('.tree-node-children');
+                if (childContainer) {
+                    this.recursiveOpen(childContainer, depth + 1);
+                }
+            });
+        }
+
+        isSensitivePath(path) {
+            const sensitivePatterns = [
+                '/admin', '/config', '/api/admin', '/.env', '/secrets',
+                '/private', '/internal', '/debug', '/test', '/staging'
+            ];
+            return sensitivePatterns.some(pattern =>
+                                          path.toLowerCase().includes(pattern.toLowerCase())
+                                         );
+        }
+
+        async renderRootMapView(container) {
+            const meta = await this.storage.getMeta();
+
+            container.innerHTML = `
+        <div class="tree-view">
+          <h3 style="color: var(--sdp-accent-blue); margin-bottom: 16px;">Shadow DOMs & Runtime Structures</h3>
+
+          <div style="margin: 20px 0;">
+            <h4 style="color: var(--sdp-accent-purple); margin-bottom: 12px;">Shadow Roots (${meta.shadowDoms?.length || 0})</h4>
+            ${(meta.shadowDoms || []).length > 0 ?
+              meta.shadowDoms.map(shadow => `
+                <div class="tree-node shadow">
+                  <div class="tree-node-content">
+                    Shadow Root - Host: ${shadow.host || 'Unknown'} | Mode: ${shadow.mode || 'closed'}
+                  </div>
+                </div>
+              `).join('') :
+          '<div class="loading">No shadow roots discovered</div>'
+      }
+          </div>
+
+          <div style="margin: 20px 0;">
+            <h4 style="color: var(--sdp-accent-purple); margin-bottom: 12px;">Framework Detection</h4>
+            <div class="loading">Framework detection coming soon...</div>
+          </div>
+        </div>
+      `;
+      }
+
+        async renderStatsView(container) {
+            const meta = await this.storage.getMeta();
+            const stats = meta.statistics || {};
+
+            container.innerHTML = `
+        <div class="stats-grid">
+          <div class="stat-card">
+            <h3>Total Elements</h3>
+            <div class="value">${stats.totalElements || 0}</div>
+          </div>
+          <div class="stat-card">
+            <h3>Total URLs</h3>
+            <div class="value">${stats.totalUrls || 0}</div>
+          </div>
+          <div class="stat-card">
+            <h3>Shadow Roots</h3>
+            <div class="value">${stats.shadowRoots || 0}</div>
+          </div>
+          <div class="stat-card">
+            <h3>Unique Globals</h3>
+            <div class="value">${stats.uniqueGlobals || 0}</div>
+          </div>
+          <div class="stat-card">
+            <h3>Last Updated</h3>
+            <div class="value" style="font-size: 14px;">
+              ${stats.timestamp ? new Date(stats.timestamp).toLocaleString() : 'Never'}
+            </div>
+          </div>
+          <div class="stat-card">
+            <h3>Discovery Status</h3>
+            <div class="value" style="font-size: 14px; color: ${this.engine.processing ? 'var(--sdp-accent-orange)' : 'var(--sdp-accent-green)'};">
+              ${this.engine.processing ? 'Running' : 'Complete'}
+            </div>
+          </div>
+        </div>
+      `;
+      }
+
+        async renderUniqueVarsView(container) {
+            const meta = await this.storage.getMeta();
+            const globals = meta.uniqueGlobals || {};
+
+            const entries = Object.entries(globals);
+
+            container.innerHTML = `
+        <div class="tree-view">
+          <h3 style="color: var(--sdp-accent-blue); margin-bottom: 16px;">Unique Global Variables (${entries.length})</h3>
+          ${entries.length > 0 ?
+                entries.map(([name, info]) => `
+              <div class="tree-node" style="margin: 12px 0; padding: 8px; background: var(--sdp-bg-secondary); border-radius: 6px;">
+                <div style="font-weight: 600; color: var(--sdp-accent-purple); margin-bottom: 4px;">${Utils.escapeHtml(name)}</div>
+                <div style="font-size: 12px; color: var(--sdp-text-secondary);">
+                  <div><strong>Type:</strong> ${info.type}</div>
+                  ${info.constructor ? `<div><strong>Constructor:</strong> ${Utils.escapeHtml(info.constructor)}</div>` : ''}
+                  ${info.sample ? `<div><strong>Sample:</strong> ${Utils.escapeHtml(JSON.stringify(info.sample).substring(0, 100))}${JSON.stringify(info.sample).length > 100 ? '...' : ''}</div>` : ''}
+                </div>
+              </div>
+            `).join('') :
+          '<div class="loading">No unique globals found</div>'
+      }
+        </div>
+      `;
+      }
+
+        async refreshDiscovery() {
+            console.log('Starting enhanced discovery...');
+            try {
+                await this.engine.startDiscovery();
+                await this.renderView();
+                console.log('Discovery refresh completed');
+            } catch (error) {
+                console.error('Discovery refresh failed:', error);
+            }
+        }
+
+        async exportData() {
+            try {
+                const [tree, meta, resources, scripts, shadows] = await Promise.all([
+                    this.storage.getTree(),
+                    this.storage.getMeta(),
+                    this.storage.getAllData('resources'),
+                    this.storage.getAllData('scripts'),
+                    this.storage.getAllData('shadows')
+                ]);
+
+                const data = {
+                    tree,
+                    meta,
+                    resources,
+                    scripts,
+                    shadows,
+                    timestamp: new Date().toISOString(),
+                    domain: location.hostname,
+                    version: CONFIG.TOOL_NAME
+                };
+
+                const blob = new Blob([Utils.safeJSONStringify(data, null, 2)], {
+                    type: 'application/json'
+                });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `site-discovery-${location.hostname}-${Date.now()}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                console.log('Data exported successfully');
+            } catch (error) {
+                console.error('Export failed:', error);
+                alert('Export failed: ' + error.message);
+            }
+        }
+
+        async clearData() {
+            if (confirm('Clear all discovery data for this domain? This action cannot be undone.')) {
+                try {
+                    await this.storage.clear();
+                    await this.renderView();
+                    console.log('Data cleared successfully');
+                } catch (error) {
+                    console.error('Clear failed:', error);
+                }
+            }
+        }
+    }
+
+    // ==== INITIALIZATION ====
+    async function initialize() {
+        // Check if already initialized
+        if (document.getElementById(CONFIG.UI_ROOT_ID)) return;
+
+        console.log(`%c${CONFIG.TOOL_NAME} initializing...`, 'color: #58a6ff; font-weight: bold;');
+
+        try {
+            // Initialize storage and engine
+            const domain = window.location.hostname;
+            const storage = new ChunkedStorage(domain);
+            const engine = new SafeDiscoveryEngine(storage);
+            const ui = new ProfessionalUI(engine, storage);
+
+            // Inject styles and create UI
+            ui.injectStyles();
+            await ui.createUI();
+
+            // Attach event listeners
+            ui.attachEventListeners();
+
+            // Load any cached data
+            await ui.loadCachedTree();
+
+            // Auto-start discovery after a short delay
+            setTimeout(async () => {
+                console.log('Starting auto-discovery...');
+                try {
+                    await engine.startDiscovery();
+                } catch (error) {
+                    console.error('Auto-discovery failed:', error);
+                }
+            }, 1500);
+
+            // Hook network calls for additional discovery
+            const originalFetch = window.fetch;
+            window.fetch = (...args) => {
+                try {
+                    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+                    if (url && !engine.visitedUrls.has(url)) {
+                        engine.discoveryQueue.push({
+                            type: 'api',
+                            url: url.toString(),
+                            method: args[1]?.method || 'GET'
+                        });
+                        engine.scheduleSave();
+                    }
+                } catch (e) {
+                    // Ignore errors in hook
+                }
+                return originalFetch.apply(window, args);
+            };
+
+            // Expose to console for debugging
+            window.SiteDiscoveryPro = {
+                engine,
+                ui,
+                storage,
+                version: CONFIG.TOOL_NAME,
+                refresh: () => engine.startDiscovery(),
+                export: () => ui.exportData(),
+                clear: () => storage.clear(),
+                config: CONFIG
+            };
+
+            console.log(`%c${CONFIG.TOOL_NAME} Ready!`, 'color: #7ee787; font-weight: bold; font-size: 14px;');
+            console.log('Access via window.SiteDiscoveryPro');
+
+        } catch (error) {
+            console.error('Initialization failed:', error);
+        }
+    }
+
+    // Start when ready
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initialize);
+    } else {
+        initialize();
+    }
+})();

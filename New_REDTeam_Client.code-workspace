@@ -1,0 +1,19 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"jest.outputConfig": {
+			"revealOn": "run",
+			"revealWithFocus": "test-results",
+			"clearOnRun": "none"
+		}
+	},
+	"extensions": {
+		"recommendations": [
+			"ritwickdey.liveserver"
+		]
+	}
+}

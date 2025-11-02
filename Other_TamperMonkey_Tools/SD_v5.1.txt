@@ -1,0 +1,1928 @@
+// ==UserScript==
+// @name         Site Discovery Pro v5.1 - Fixed
+// @namespace    https://redteam.local/sitediscovery-pro
+// @version      5.1
+// @description  Professional red team site structure discovery tool with enhanced interactivity, multiple views, and robust error handling
+// @match        *://*/*
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @grant        GM_download
+// @author       CISO - RedTeam Leader
+// @connect      *
+// @run-at       document-end
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    console.log('Site Discovery Pro v5.1 Loading...', 'color: #58a6ff; font-weight: bold;');
+
+    // ==== CONFIGURATION ====
+    const CONFIG = {
+        TOOL_NAME: "Site Discovery Pro v5.1",
+        UI_ROOT_ID: 'sdp-ui-root-v5',
+        STORAGE_PREFIX: 'sdp_v5_',
+        CHUNK_SIZE: 100,
+        MAX_RECURSION_DEPTH: 50,
+        CACHE_DURATION_DAYS: 30,
+        DEBOUNCE_SAVE_MS: 3000,
+        HOVER_DELAY_MS: 1000,
+        MAX_PREVIEW_SIZE: 5000,
+        STANDARD_GLOBALS_COUNT: 1000,
+        MAX_RETRIES: 3,
+        MEMORY_THRESHOLD: 0.8 // 80% memory usage threshold
+    };
+
+    const DEBUG_MODE_KEY = 'sd_debug_mode';
+    const MINIMIZED_STATE_KEY = 'sd_minimized_' + location.hostname;
+    const MINIMIZED_ICON_PATH = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMzAiIGZpbGw9IiMxNjFiMjIiIHN0cm9rZT0iIzU4YTZmZiIgc3Ryb2tlLXdpZHRoPSIyIi8+Cjx0ZXh0IHg9IjMyIiB5PSI0MCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzU4YTZmZiIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIyNCIgZm9udC13ZWlnaHQ9ImJvbGQiPuKMqzwvdGV4dD4KPC9zdmc+';
+    const PANEL_FRONT_ID = 'sdp-front-panel';
+    const PANEL_BACK_ID = 'sdp-back-panel';
+    const UI_ID = CONFIG.UI_ROOT_ID;
+    const iconId = 'sdp-minimized-icon';
+    let lastDataLength = 0;
+    let engine; // Global reference to engine instance
+
+    const COLOR_SCHEME = {
+        front: '#28a745',   // green for front-end pages
+        source: '#17a2b8',  // teal for source files
+        dependency: '#ffc107', // amber for dependencies
+        database: '#6f42c1', // purple for databases
+        back: '#dc3545',    // red for back-end panel
+        sensitive: '#ff00ff' // bright violet for sensitive items
+    };
+
+    // ==== MEMORY MANAGEMENT ====
+    class MemoryManager {
+        constructor() {
+            this.threshold = CONFIG.MEMORY_THRESHOLD;
+            this.checkInterval = null;
+            this.lastCheck = 0;
+        }
+
+        startMonitoring() {
+            this.checkInterval = setInterval(() => {
+                this.checkMemoryUsage();
+            }, 5000); // Check every 5 seconds
+        }
+
+        stopMonitoring() {
+            if (this.checkInterval) {
+                clearInterval(this.checkInterval);
+                this.checkInterval = null;
+            }
+        }
+
+        checkMemoryUsage() {
+            if (performance && performance.memory) {
+                const used = performance.memory.usedJSHeapSize;
+                const total = performance.memory.totalJSHeapSize;
+                const limit = performance.memory.jsHeapSizeLimit;
+                const ratio = used / limit;
+
+                if (ratio > this.threshold) {
+                    console.warn(`Memory usage high: ${(ratio * 100).toFixed(1)}%`);
+                    this.triggerCleanup();
+                }
+            }
+        }
+
+        triggerCleanup() {
+            // Trigger cleanup in engine
+            if (engine && engine.cleanupOldData) {
+                engine.cleanupOldData();
+            }
+        }
+
+        getMemoryStats() {
+            if (performance && performance.memory) {
+                return {
+                    used: performance.memory.usedJSHeapSize,
+                    total: performance.memory.totalJSHeapSize,
+                    limit: performance.memory.jsHeapSizeLimit,
+                    usage: (performance.memory.usedJSHeapSize / performance.memory.jsHeapSizeLimit) * 100
+                };
+            }
+            return null;
+        }
+    }
+
+    // ==== ENHANCED STORAGE WITH CHUNKING (from v4) ====
+    class ChunkedStorage {
+        constructor(domain) {
+            this.domain = domain.replace(/[^a-zA-Z0-9]/g, '_');
+            this.indexKey = `${CONFIG.STORAGE_PREFIX}index_${this.domain}`;
+            this.chunkPrefix = `${CONFIG.STORAGE_PREFIX}chunk_${this.domain}_`;
+            this.treeKey = `${CONFIG.STORAGE_PREFIX}tree_${this.domain}`;
+            this.metaKey = `${CONFIG.STORAGE_PREFIX}meta_${this.domain}`;
+            this.backupKey = `${CONFIG.STORAGE_PREFIX}backup_${this.domain}`;
+            this.dataKey = `${CONFIG.STORAGE_PREFIX}data_${this.domain}`;
+            this.initializeIndex();
+        }
+
+        initializeIndex() {
+            try {
+                const index = this.getIndex();
+                if (!index) {
+                    this.saveIndex({
+                        chunks: [],
+                        lastChunk: 0,
+                        created: Date.now(),
+                        lastUpdated: Date.now(),
+                        version: '5.1'
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to initialize index:', error);
+                this.recoverFromBackup();
+            }
+        }
+
+        getIndex() {
+            try {
+                const data = GM_getValue(this.indexKey, null);
+                return data ? JSON.parse(data) : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        async saveIndex(index) {
+            try {
+                GM_setValue(this.indexKey, JSON.stringify(index));
+                // Create backup
+                GM_setValue(this.backupKey, JSON.stringify(index));
+            } catch (error) {
+                console.error('Failed to save index:', error);
+            }
+        }
+
+        loadData() {
+            try {
+                const raw = GM_getValue(this.dataKey, '{}');
+                const parsed = JSON.parse(raw);
+                return {
+                    front: Array.isArray(parsed.front) ? parsed.front : [],
+                    back: Array.isArray(parsed.back) ? parsed.back : []
+                };
+            } catch (error) {
+                console.error('Failed to load data:', error);
+                return { front: [], back: [] };
+            }
+        }
+
+        saveData(data) {
+            try {
+                // Clean old data before saving new
+                this.cleanupOldData();
+                GM_setValue(this.dataKey, JSON.stringify(data));
+            } catch (error) {
+                console.error('Failed to save data:', error);
+            }
+        }
+
+        cleanupOldData() {
+            try {
+                const data = this.loadData();
+                const maxItems = 1000; // Maximum items to keep
+                
+                if (data.front.length > maxItems) {
+                    data.front = data.front.slice(-maxItems);
+                }
+                if (data.back.length > maxItems) {
+                    data.back = data.back.slice(-maxItems);
+                }
+                
+                this.saveData(data);
+            } catch (error) {
+                console.error('Failed to cleanup old data:', error);
+            }
+        }
+
+        loadTree() {
+            try {
+                const raw = GM_getValue(this.treeKey, '{}');
+                return JSON.parse(raw);
+            } catch (error) {
+                console.error('Failed to load tree:', error);
+                return {};
+            }
+        }
+
+        saveTree(tree) {
+            try {
+                GM_setValue(this.treeKey, JSON.stringify(tree));
+            } catch (error) {
+                console.error('Failed to save tree:', error);
+            }
+        }
+
+        loadMeta() {
+            try {
+                const raw = GM_getValue(this.metaKey, '{}');
+                return JSON.parse(raw);
+            } catch (error) {
+                console.error('Failed to load meta:', error);
+                return {
+                    statistics: {
+                        totalElements: 0,
+                        totalUrls: 0,
+                        shadowRoots: 0,
+                        uniqueGlobals: 0,
+                        timestamp: Date.now()
+                    }
+                };
+            }
+        }
+
+        saveMeta(meta) {
+            try {
+                GM_setValue(this.metaKey, JSON.stringify(meta));
+            } catch (error) {
+                console.error('Failed to save meta:', error);
+            }
+        }
+
+        clear() {
+            try {
+                GM_deleteValue(this.dataKey);
+                GM_deleteValue(this.treeKey);
+                GM_deleteValue(this.metaKey);
+                GM_deleteValue(this.indexKey);
+                GM_deleteValue(this.backupKey);
+            } catch (error) {
+                console.error('Failed to clear storage:', error);
+            }
+        }
+
+        isExpired() {
+            const meta = this.loadMeta();
+            const age = Date.now() - (meta.statistics?.timestamp || 0);
+            return age > (CONFIG.CACHE_DURATION_DAYS * 24 * 60 * 60 * 1000);
+        }
+
+        recoverFromBackup() {
+            try {
+                const backup = GM_getValue(this.backupKey, null);
+                if (backup) {
+                    GM_setValue(this.indexKey, backup);
+                    console.log('Recovered from backup');
+                }
+            } catch (error) {
+                console.error('Failed to recover from backup:', error);
+            }
+        }
+    }
+
+    // ==== UTILITY FUNCTIONS ====
+    const Utils = {
+        escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        },
+
+        formatFileSize(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        },
+
+        debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        },
+
+        async retry(fn, maxRetries = CONFIG.MAX_RETRIES) {
+            for (let i = 0; i <= maxRetries; i++) {
+                try {
+                    return await fn();
+                } catch (error) {
+                    if (i === maxRetries) throw error;
+                    await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, i)));
+                }
+            }
+        },
+
+        safeJSONParse(str, fallback = null) {
+            try {
+                return JSON.parse(str);
+            } catch (e) {
+                console.warn('JSON parse failed:', e);
+                return fallback;
+            }
+        },
+
+        safeJSONStringify(obj, fallback = '{}') {
+            try {
+                return JSON.stringify(obj);
+            } catch (e) {
+                console.warn('JSON stringify failed:', e);
+                return fallback;
+            }
+        }
+    };
+
+    // ==== NETWORK INTERCEPTION ====
+    class NetworkInterceptor {
+        constructor(engine) {
+            this.engine = engine;
+            this.interceptedData = { front: [], back: [] };
+            this.setupInterception();
+        }
+
+        setupInterception() {
+            // Intercept XMLHttpRequest
+            const origOpen = XMLHttpRequest.prototype.open;
+            const origSend = XMLHttpRequest.prototype.send;
+            
+            XMLHttpRequest.prototype.open = function(method, url, ...args) {
+                this._sdp_method = method;
+                this._sdp_url = url;
+                this._sdp_startTime = Date.now();
+                return origOpen.apply(this, [method, url, ...args]);
+            };
+
+            XMLHttpRequest.prototype.send = function(data) {
+                this.addEventListener('load', () => {
+                    if (this.status === 200) {
+                        const entry = {
+                            id: this._sdp_url,
+                            type: 'xhr',
+                            method: this._sdp_method,
+                            url: this._sdp_url,
+                            status: this.status,
+                            responseSnippet: this.responseText?.slice(0, 200) || '',
+                            timestamp: Date.now(),
+                            duration: Date.now() - this._sdp_startTime
+                        };
+                        this.engine.addBackEndData(entry);
+                    }
+                });
+                return origSend.apply(this, arguments);
+            };
+
+            // Intercept Fetch API
+            const origFetch = window.fetch;
+            window.fetch = async (resource, options = {}) => {
+                const startTime = Date.now();
+                const url = typeof resource === 'string' ? resource : resource.url;
+                
+                try {
+                    const response = await origFetch(resource, options);
+                    const clonedResponse = response.clone();
+                    
+                    clonedResponse.text().then(text => {
+                        if (response.ok) {
+                            const entry = {
+                                id: url,
+                                type: 'fetch',
+                                method: options.method || 'GET',
+                                url: url,
+                                status: response.status,
+                                responseSnippet: text.slice(0, 200),
+                                timestamp: Date.now(),
+                                duration: Date.now() - startTime
+                            };
+                            this.engine.addBackEndData(entry);
+                        }
+                    }).catch(() => {});
+                    
+                    return response;
+                } catch (error) {
+                    console.warn('Fetch error:', error);
+                    throw error;
+                }
+            };
+        }
+    }
+
+    // ==== ENHANCED DISCOVERY ENGINE ====
+    class DiscoveryEngine {
+        constructor(storage) {
+            this.storage = storage;
+            this.siteData = storage.loadData();
+            this.lastDataLength = (this.siteData.front?.length || 0) + (this.siteData.back?.length || 0);
+            this.processing = false;
+            this.visitedUrls = new Set();
+            this.discoveryQueue = [];
+            this.networkInterceptor = new NetworkInterceptor(this);
+            this.memoryManager = new MemoryManager();
+        }
+
+        dedupeAdd(collection, item) {
+            if (!collection.some(i => i.id === item.id)) {
+                collection.push(item);
+            }
+        }
+
+        addFrontEndData(item) {
+            this.dedupeAdd(this.siteData.front, item);
+            this.debouncedSave();
+        }
+
+        addBackEndData(item) {
+            this.dedupeAdd(this.siteData.back, item);
+            this.debouncedSave();
+        }
+
+        debouncedSave = Utils.debounce(() => {
+            this.storage.saveData(this.siteData);
+        }, CONFIG.DEBOUNCE_SAVE_MS);
+
+        async startDiscovery() {
+            if (this.processing) return;
+            this.processing = true;
+
+            try {
+                console.log('🔍 Starting enhanced discovery...');
+                
+                // Start memory monitoring
+                this.memoryManager.startMonitoring();
+
+                // Add current page
+                const pageEntry = {
+                    id: location.href,
+                    type: 'page',
+                    url: location.href,
+                    title: document.title || 'Current Page',
+                    timestamp: Date.now()
+                };
+                this.addFrontEndData(pageEntry);
+
+                // Discover page resources
+                await this.discoverPageResources();
+
+                // Capture globals
+                this.captureGlobals();
+
+                // Analyze heap snapshot
+                this.analyzeHeapSnapshot();
+
+                // Build tree structure
+                const tree = this.buildTree();
+                this.storage.saveTree(tree);
+
+                // Save meta information
+                const meta = this.buildMeta();
+                this.storage.saveMeta(meta);
+
+                // Save data
+                this.storage.saveData(this.siteData);
+
+                console.log('✅ Discovery completed successfully');
+            } catch (error) {
+                console.error('❌ Discovery failed:', error);
+            } finally {
+                this.processing = false;
+            }
+        }
+
+        async discoverPageResources() {
+            try {
+                // Discover all resources on the page
+                const resourceTypes = [
+                    { selector: 'script[src]', attr: 'src' },
+                    { selector: 'link[href]', attr: 'href' },
+                    { selector: 'img[src]', attr: 'src' },
+                    { selector: 'source[src]', attr: 'src' },
+                    { selector: 'iframe[src]', attr: 'src' },
+                    { selector: 'embed[src]', attr: 'src' },
+                    { selector: 'object[data]', attr: 'data' }
+                ];
+
+                for (const { selector, attr } of resourceTypes) {
+                    const elements = document.querySelectorAll(selector);
+                    elements.forEach(element => {
+                        const url = element.getAttribute(attr);
+                        if (url && !this.visitedUrls.has(url)) {
+                            this.visitedUrls.add(url);
+                            const entry = {
+                                id: url,
+                                type: 'resource',
+                                element: element.tagName.toLowerCase(),
+                                url: url,
+                                timestamp: Date.now()
+                            };
+                            this.addFrontEndData(entry);
+                        }
+                    });
+                }
+
+                // Discover forms
+                const forms = document.querySelectorAll('form');
+                forms.forEach(form => {
+                    const action = form.action;
+                    if (action && !this.visitedUrls.has(action)) {
+                        this.visitedUrls.add(action);
+                        const entry = {
+                            id: action,
+                            type: 'form',
+                            method: form.method || 'GET',
+                            url: action,
+                            fields: Array.from(form.elements).map(el => ({
+                                name: el.name,
+                                type: el.type,
+                                value: el.value
+                            })),
+                            timestamp: Date.now()
+                        };
+                        this.addFrontEndData(entry);
+                    }
+                });
+
+                // Discover links
+                const links = document.querySelectorAll('a[href]');
+                links.forEach(link => {
+                    const url = link.href;
+                    if (url && url.startsWith(location.origin) && !this.visitedUrls.has(url)) {
+                        this.visitedUrls.add(url);
+                        const entry = {
+                            id: url,
+                            type: 'link',
+                            url: url,
+                            text: link.textContent.trim(),
+                            timestamp: Date.now()
+                        };
+                        this.addFrontEndData(entry);
+                    }
+                });
+            } catch (error) {
+                console.error('Error discovering page resources:', error);
+            }
+        }
+
+        captureGlobals() {
+            try {
+                const uniqueGlobals = {};
+                let count = 0;
+
+                for (const key in window) {
+                    if (!Object.prototype.hasOwnProperty.call(window, key)) continue;
+                    if (count >= CONFIG.STANDARD_GLOBALS_COUNT) break;
+
+                    const val = window[key];
+                    if (val && typeof val === 'object' && !Array.isArray(val)) {
+                        const keys = Object.keys(val);
+                        if (keys.length > 5) {
+                            const objEntry = {
+                                id: `${location.href}::${key}`,
+                                type: 'object',
+                                name: key,
+                                keys: keys.slice(0, 10),
+                                timestamp: Date.now()
+                            };
+                            this.addFrontEndData(objEntry);
+
+                            // Track for unique globals view
+                            const constructor = val.constructor ? val.constructor.name : 'Object';
+                            uniqueGlobals[key] = {
+                                type: typeof val,
+                                constructor: constructor,
+                                sample: this.getSampleValue(val),
+                                count: keys.length
+                            };
+
+                            count++;
+                        }
+                    }
+                }
+
+                // Store unique globals for statistics view
+                const meta = this.storage.loadMeta();
+                meta.uniqueGlobals = uniqueGlobals;
+                this.storage.saveMeta(meta);
+
+            } catch (e) {
+                console.error('captureGlobals error', e);
+            }
+        }
+
+        getSampleValue(obj) {
+            try {
+                const keys = Object.keys(obj);
+                if (keys.length === 0) return null;
+
+                const firstKey = keys[0];
+                const value = obj[firstKey];
+
+                if (typeof value === 'string' && value.length > 50) {
+                    return value.substring(0, 50) + '...';
+                }
+                return value;
+            } catch (e) {
+                return '[Error getting sample]';
+            }
+        }
+
+        analyzeHeapSnapshot() {
+            try {
+                if (typeof performance !== 'undefined' && performance.memory) {
+                    const heapData = {
+                        timestamp: Date.now(),
+                        usedJSHeapSize: performance.memory.usedJSHeapSize,
+                        totalJSHeapSize: performance.memory.totalJSHeapSize,
+                        jsHeapSizeLimit: performance.memory.jsHeapSizeLimit,
+                        objects: []
+                    };
+
+                    for (const key in window) {
+                        if (!Object.prototype.hasOwnProperty.call(window, key)) continue;
+                        const val = window[key];
+                        if (val && typeof val === 'object' && !Array.isArray(val)) {
+                            try {
+                                const keys = Object.keys(val);
+                                if (keys.length > 0) {
+                                    heapData.objects.push({
+                                        name: key,
+                                        type: 'object',
+                                        propertyCount: keys.length,
+                                        properties: keys.slice(0, 5)
+                                    });
+                                }
+                            } catch (e) {
+                                // Skip objects that can't be analyzed
+                            }
+                        }
+                    }
+
+                    const heapEntry = {
+                        id: location.href + '::heap',
+                        type: 'heap-analysis',
+                        url: location.href,
+                        data: heapData,
+                        timestamp: Date.now()
+                    };
+
+                    this.addBackEndData(heapEntry);
+                }
+            } catch (e) {
+                console.error('Heap snapshot analysis error', e);
+            }
+        }
+
+        buildTree() {
+            const tree = { frontend: {}, backend: {} };
+            
+            // Build frontend tree
+            this.siteData.front?.forEach(item => {
+                if (item.url) {
+                    this.addToTree(tree.frontend, item.url, item);
+                }
+            });
+
+            // Build backend tree
+            this.siteData.back?.forEach(item => {
+                if (item.url) {
+                    this.addToTree(tree.backend, item.url, item);
+                }
+            });
+
+            return {
+                frontend: this.sortTree(tree.frontend),
+                backend: this.sortTree(tree.backend)
+            };
+        }
+
+        addToTree(tree, url, item) {
+            try {
+                const urlObj = new URL(url, location.origin);
+                if (urlObj.hostname !== location.hostname) return;
+
+                const parts = urlObj.pathname.split('/').filter(p => p);
+                let current = tree;
+
+                parts.forEach((part, index) => {
+                    const isLast = index === parts.length - 1;
+                    const fileExt = isLast ? this.getFileExtension(part) : null;
+
+                    if (!current[part]) {
+                        current[part] = {
+                            type: isLast ? 'file' : 'directory',
+                            extension: fileExt,
+                            url: urlObj.href,
+                            path: '/' + parts.slice(0, index + 1).join('/'),
+                            children: isLast ? undefined : {},
+                            item: item
+                        };
+                    }
+
+                    if (!isLast && current[part].children) {
+                        current = current[part].children;
+                    }
+                });
+            } catch (e) {
+                // Invalid URL
+            }
+        }
+
+        sortTree(tree) {
+            const sorted = {};
+            const entries = Object.entries(tree);
+
+            entries.sort((a, b) => {
+                const aIsDir = a[1].type === 'directory';
+                const bIsDir = b[1].type === 'directory';
+
+                if (aIsDir && !bIsDir) return -1;
+                if (!aIsDir && bIsDir) return 1;
+                return a[0].localeCompare(b[0]);
+            });
+
+            entries.forEach(([key, value]) => {
+                sorted[key] = value;
+                if (value.children) {
+                    sorted[key].children = this.sortTree(value.children);
+                }
+            });
+
+            return sorted;
+        }
+
+        getFileExtension(filename) {
+            const match = filename.match(/\.([^.]+)$/);
+            return match ? match[1].toLowerCase() : null;
+        }
+
+        buildMeta() {
+            const meta = this.storage.loadMeta();
+            meta.statistics = {
+                totalElements: (this.siteData.front?.length || 0) + (this.siteData.back?.length || 0),
+                totalUrls: (this.siteData.front?.filter(item => item.url).length || 0) +
+                          (this.siteData.back?.filter(item => item.url).length || 0),
+                shadowRoots: this.siteData.front?.filter(item => item.type === 'shadow-root').length || 0,
+                uniqueGlobals: Object.keys(meta.uniqueGlobals || {}).length,
+                timestamp: Date.now(),
+                memoryUsage: this.memoryManager.getMemoryStats()
+            };
+            return meta;
+        }
+
+        cleanupOldData() {
+            // Keep only recent data to prevent memory issues
+            const maxAge = Date.now() - (24 * 60 * 60 * 1000); // 24 hours
+            const maxItems = 500;
+
+            this.siteData.front = this.siteData.front?.filter(item => 
+                item.timestamp > maxAge
+            ).slice(-maxItems) || [];
+
+            this.siteData.back = this.siteData.back?.filter(item => 
+                item.timestamp > maxAge
+            ).slice(-maxItems) || [];
+
+            this.storage.saveData(this.siteData);
+        }
+    }
+
+    // ==== ENHANCED UI WITH PROFESSIONAL STYLING ====
+    class ProfessionalUI {
+        constructor(engine, storage) {
+            this.engine = engine;
+            this.storage = storage;
+            this.root = null;
+            this.currentView = 'tree';
+            this.previewCache = new Map();
+            this.currentPreview = null;
+            this.hoverTimeout = null;
+            this.activeNode = null;
+        }
+
+        injectStyles() {
+            const style = document.createElement('style');
+            style.textContent = `
+                /* PROFESSIONAL DARK THEME */
+                :root {
+                    --sdp-bg-primary: #0d1117;
+                    --sdp-bg-secondary: #161b22;
+                    --sdp-bg-tertiary: #21262d;
+                    --sdp-text-primary: #f0f6fc;
+                    --sdp-text-secondary: #8b949e;
+                    --sdp-text-muted: #656d76;
+                    --sdp-accent-blue: #58a6ff;
+                    --sdp-accent-purple: #a5a5ff;
+                    --sdp-accent-green: #7ee787;
+                    --sdp-accent-orange: #ffa657;
+                    --sdp-accent-red: #f85149;
+                    --sdp-accent-yellow: #ffc107;
+                    --sdp-accent-pink: #ff00ff;
+                    --sdp-border-default: #30363d;
+                    --sdp-border-muted: #21262d;
+                    --sdp-shadow-default: 0 8px 24px rgba(1, 4, 9, 0.8);
+                    --sdp-shadow-large: 0 16px 32px rgba(1, 4, 9, 0.9);
+                    --sdp-glow-blue: 0 0 0 1px rgba(88, 166, 255, 0.4);
+                    --sdp-glow-purple: 0 0 0 1px rgba(165, 165, 255, 0.4);
+                    --sdp-transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+                }
+
+                #${CONFIG.UI_ROOT_ID} {
+                    position: fixed;
+                    right: 20px;
+                    bottom: 20px;
+                    width: 720px;
+                    max-height: 85vh;
+                    background: var(--sdp-bg-primary);
+                    border: 1px solid var(--sdp-border-default);
+                    border-radius: 12px;
+                    box-shadow: var(--sdp-shadow-large);
+                    z-index: 2147483647;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+                    color: var(--sdp-text-primary);
+                    overflow: hidden;
+                    display: flex;
+                    flex-direction: column;
+                    transition: var(--sdp-transition);
+                    backdrop-filter: blur(10px);
+                }
+
+                #${CONFIG.UI_ROOT_ID}::before {
+                    content: '';
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    height: 1px;
+                    background: linear-gradient(90deg, transparent, var(--sdp-accent-blue), transparent);
+                }
+
+                #${CONFIG.UI_ROOT_ID}.minimized {
+                    width: 64px;
+                    height: 64px;
+                    border-radius: 50%;
+                    background: var(--sdp-bg-secondary);
+                    box-shadow: var(--sdp-glow-purple), var(--sdp-shadow-default);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .warning-banner {
+                    background: linear-gradient(135deg, var(--sdp-accent-red), #d73a49);
+                    color: white;
+                    padding: 6px 16px;
+                    text-align: center;
+                    font-size: 10px;
+                    font-weight: 600;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header {
+                    background: var(--sdp-bg-secondary);
+                    padding: 16px 20px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    border-bottom: 1px solid var(--sdp-border-default);
+                    cursor: move;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header h2 {
+                    margin: 0;
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: var(--sdp-text-primary);
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header h2::before {
+                    content: '🔧';
+                    font-size: 16px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header .controls {
+                    display: flex;
+                    gap: 6px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header button {
+                    background: var(--sdp-bg-tertiary);
+                    border: 1px solid var(--sdp-border-default);
+                    color: var(--sdp-text-secondary);
+                    padding: 6px 10px;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    font-size: 11px;
+                    font-weight: 500;
+                    transition: var(--sdp-transition);
+                    min-width: 28px;
+                    height: 28px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header button:hover {
+                    background: var(--sdp-accent-blue);
+                    border-color: var(--sdp-accent-blue);
+                    color: white;
+                    transform: translateY(-1px);
+                    box-shadow: 0 4px 12px rgba(88, 166, 255, 0.4);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tabs {
+                    background: var(--sdp-bg-secondary);
+                    padding: 8px 20px;
+                    display: flex;
+                    gap: 4px;
+                    border-bottom: 1px solid var(--sdp-border-default);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tabs button {
+                    background: transparent;
+                    border: none;
+                    color: var(--sdp-text-secondary);
+                    padding: 8px 14px;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 500;
+                    transition: var(--sdp-transition);
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tabs button:hover {
+                    background: var(--sdp-bg-tertiary);
+                    color: var(--sdp-text-primary);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tabs button.active {
+                    background: var(--sdp-bg-tertiary);
+                    color: var(--sdp-accent-blue);
+                    box-shadow: var(--sdp-glow-blue);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .content {
+                    background: var(--sdp-bg-primary);
+                    flex: 1;
+                    overflow: hidden;
+                    display: flex;
+                    flex-direction: column;
+                    position: relative;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-container {
+                    display: flex;
+                    flex-direction: column;
+                    height: 100%;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-section {
+                    flex: 1;
+                    overflow-y: auto;
+                    padding: 16px;
+                    border-bottom: 2px solid var(--sdp-border-default);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-section:last-child {
+                    border-bottom: none;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-section-header {
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: var(--sdp-accent-blue);
+                    margin-bottom: 12px;
+                    padding-bottom: 8px;
+                    border-bottom: 1px solid var(--sdp-border-muted);
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-section-header.frontend::before {
+                    content: '🌐';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-section-header.backend::before {
+                    content: '⚙️';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-view {
+                    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+                    font-size: 13px;
+                    line-height: 1.5;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node {
+                    margin-left: 20px;
+                    position: relative;
+                    user-select: none;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node-content {
+                    display: flex;
+                    align-items: center;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    transition: var(--sdp-transition);
+                    position: relative;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node-content:hover {
+                    background: var(--sdp-bg-tertiary);
+                    color: var(--sdp-text-primary);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.directory > .tree-node-content {
+                    font-weight: 500;
+                    color: var(--sdp-accent-blue);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.directory > .tree-node-content::before {
+                    content: '📁';
+                    margin-right: 8px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.directory.open > .tree-node-content::before {
+                    content: '📂';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file > .tree-node-content {
+                    color: var(--sdp-text-primary);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file > .tree-node-content::before {
+                    content: '📄';
+                    margin-right: 8px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.script > .tree-node-content {
+                    color: var(--sdp-accent-green);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.script > .tree-node-content::before {
+                    content: '📜';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.style > .tree-node-content {
+                    color: var(--sdp-accent-purple);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.style > .tree-node-content::before {
+                    content: '🎨';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.image > .tree-node-content {
+                    color: var(--sdp-accent-orange);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.image > .tree-node-content::before {
+                    content: '🖼️';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.shadow {
+                    color: var(--sdp-accent-purple);
+                    font-style: italic;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.shadow > .tree-node-content::before {
+                    content: '👻';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.sensitive > .tree-node-content {
+                    color: var(--sdp-accent-red) !important;
+                    animation: pulse-glow 2s infinite;
+                }
+
+                @keyframes pulse-glow {
+                    0%, 100% { box-shadow: 0 0 5px rgba(248, 81, 73, 0.3); }
+                    50% { box-shadow: 0 0 15px rgba(248, 81, 73, 0.6); }
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node-children {
+                    margin-top: 2px;
+                    display: none;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.open > .tree-node-children {
+                    display: block;
+                }
+
+                /* Enhanced Preview Tooltip */
+                #${CONFIG.UI_ROOT_ID} .preview-tooltip {
+                    position: absolute;
+                    background: var(--sdp-bg-secondary);
+                    border: 1px solid var(--sdp-border-default);
+                    border-radius: 8px;
+                    padding: 12px;
+                    max-width: 400px;
+                    max-height: 300px;
+                    overflow: auto;
+                    box-shadow: var(--sdp-shadow-default);
+                    z-index: 1000;
+                    font-size: 12px;
+                    line-height: 1.4;
+                    backdrop-filter: blur(10px);
+                    pointer-events: auto;
+                    opacity: 0;
+                    transform: translateY(10px);
+                    transition: opacity 0.2s, transform 0.2s;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .preview-tooltip.visible {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .preview-tooltip .preview-header {
+                    font-weight: 600;
+                    margin-bottom: 8px;
+                    padding-bottom: 8px;
+                    border-bottom: 1px solid var(--sdp-border-muted);
+                    color: var(--sdp-accent-blue);
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .preview-tooltip .preview-body {
+                    color: var(--sdp-text-secondary);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .preview-tooltip .preview-meta {
+                    margin-top: 8px;
+                    padding-top: 8px;
+                    border-top: 1px solid var(--sdp-border-muted);
+                    font-size: 11px;
+                    color: var(--sdp-text-muted);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .preview-tooltip .preview-content {
+                    background: var(--sdp-bg-primary);
+                    border-radius: 4px;
+                    padding: 8px;
+                    margin-top: 8px;
+                    font-family: 'SF Mono', Monaco, monospace;
+                    font-size: 11px;
+                    white-space: pre-wrap;
+                    word-break: break-word;
+                    max-height: 150px;
+                    overflow: auto;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .stats-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                    gap: 12px;
+                    padding: 20px;
+                    overflow-y: auto;
+                    max-height: calc(85vh - 200px);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .stat-card {
+                    background: var(--sdp-bg-secondary);
+                    border: 1px solid var(--sdp-border-default);
+                    border-radius: 8px;
+                    padding: 16px;
+                    text-align: center;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .stat-card h3 {
+                    margin: 0 0 8px 0;
+                    font-size: 12px;
+                    color: var(--sdp-text-secondary);
+                    font-weight: 500;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .stat-card .value {
+                    font-size: 24px;
+                    font-weight: 700;
+                    color: var(--sdp-accent-blue);
+                    margin-bottom: 4px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .loading {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 40px;
+                    color: var(--sdp-text-muted);
+                    font-style: italic;
+                    overflow-y: auto;
+                }
+
+                /* Enhanced Scrollbar styling */
+                #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar {
+                    width: 8px;
+                    height: 8px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar-track {
+                    background: var(--sdp-bg-secondary);
+                    border-radius: 4px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar-thumb {
+                    background: var(--sdp-border-default);
+                    border-radius: 4px;
+                    border: 2px solid var(--sdp-bg-secondary);
+                }
+
+                #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar-thumb:hover {
+                    background: var(--sdp-text-muted);
+                }
+
+                #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar-corner {
+                    background: var(--sdp-bg-secondary);
+                }
+
+                /* Responsive design */
+                @media (max-width: 768px) {
+                    #${CONFIG.UI_ROOT_ID} {
+                        right: 10px;
+                        bottom: 10px;
+                        left: 10px;
+                        width: auto;
+                        max-height: 90vh;
+                    }
+                }
+
+                /* Minimized state */
+                #${CONFIG.UI_ROOT_ID}.minimized .warning-banner,
+                #${CONFIG.UI_ROOT_ID}.minimized .tabs,
+                #${CONFIG.UI_ROOT_ID}.minimized .content,
+                #${CONFIG.UI_ROOT_ID}.minimized .header h2,
+                #${CONFIG.UI_ROOT_ID}.minimized .header .controls button:not(.minimize-btn) {
+                    display: none;
+                }
+
+                #${CONFIG.UI_ROOT_ID}.minimized .header {
+                    padding: 20px;
+                    border: none;
+                    justify-content: center;
+                }
+
+                #${CONFIG.UI_ROOT_ID}.minimized .header .controls {
+                    position: absolute;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        async createUI() {
+            // Remove any existing UI
+            const existingUI = document.getElementById(CONFIG.UI_ROOT_ID);
+            if (existingUI) {
+                existingUI.remove();
+            }
+
+            const root = document.createElement('div');
+            root.id = CONFIG.UI_ROOT_ID;
+            root.innerHTML = `
+                <div class="warning-banner">
+                    ⚠️ Red Team Tool - Authorized Use Only ⚠️
+                </div>
+                <div class="header">
+                    <h2>${CONFIG.TOOL_NAME}</h2>
+                    <div class="controls">
+                        <button class="refresh-btn" title="Refresh Discovery">🔄</button>
+                        <button class="export-btn" title="Export Data">💾</button>
+                        <button class="clear-btn" title="Clear Data">🗑️</button>
+                        <button class="minimize-btn" title="Minimize">⥎</button>
+                        <button class="close-btn" title="Close">⤫</button>
+                    </div>
+                </div>
+                <div class="tabs">
+                    <button class="tab-btn active" data-view="tree">🌳 Tree View</button>
+                    <button class="tab-btn" data-view="rootmap">🗺️ Root Map</button>
+                    <button class="tab-btn" data-view="stats">📊 Statistics</button>
+                    <button class="tab-btn" data-view="unique">☬ Unique Vars</button>
+                </div>
+                <div class="content">
+                    <div id="view-container"></div>
+                </div>
+            `;
+            document.body.appendChild(root);
+            this.root = root;
+        }
+
+        attachEventListeners() {
+            const root = this.root;
+
+            // Header controls
+            root.querySelector('.refresh-btn').onclick = () => this.refreshDiscovery();
+            root.querySelector('.export-btn').onclick = () => this.exportData();
+            root.querySelector('.clear-btn').onclick = () => this.clearData();
+            root.querySelector('.minimize-btn').onclick = () => this.toggleMinimize();
+            root.querySelector('.close-btn').onclick = () => root.remove();
+
+            // Tab switching
+            root.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.onclick = () => {
+                    root.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    this.currentView = btn.dataset.view;
+                    this.renderView();
+                };
+            });
+
+            // Make draggable
+            this.makeDraggable(root);
+        }
+
+        makeDraggable(element) {
+            const header = element.querySelector('.header');
+            let isDragging = false;
+            let startX, startY, initialX, initialY;
+
+            header.addEventListener('mousedown', (e) => {
+                if (e.target.tagName === 'BUTTON') return;
+                isDragging = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                const rect = element.getBoundingClientRect();
+                initialX = rect.left;
+                initialY = rect.top;
+                document.body.style.userSelect = 'none';
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                element.style.left = `${initialX + dx}px`;
+                element.style.top = `${initialY + dy}px`;
+                element.style.right = 'auto';
+                element.style.bottom = 'auto';
+            });
+
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+                document.body.style.userSelect = '';
+            });
+        }
+
+        toggleMinimize() {
+            const root = this.root;
+            const isMinimized = root.classList.toggle('minimized');
+
+            // Save minimized state
+            GM_setValue(MINIMIZED_STATE_KEY, isMinimized);
+
+            if (isMinimized) {
+                this.createMinimizedIcon();
+            } else {
+                this.removeMinimizedIcon();
+            }
+        }
+
+        createMinimizedIcon() {
+            if (document.getElementById('sdp-minimized-icon')) return;
+
+            const icon = document.createElement('div');
+            icon.id = 'sdp-minimized-icon';
+            icon.style.cssText = `
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                width: 64px;
+                height: 64px;
+                background: url('${MINIMIZED_ICON_PATH}') center/contain no-repeat;
+                cursor: pointer;
+                z-index: 2147483647;
+                border-radius: 50%;
+                box-shadow: 0 0 5px cyan;
+                transition: box-shadow 0.25s ease-in-out;
+            `;
+
+            // Add glow animation
+            let glowInterval = setInterval(() => {
+                const currentLength = (this.engine.siteData.front?.length || 0) +
+                                    (this.engine.siteData.back?.length || 0);
+                const isCollecting = currentLength > this.engine.lastDataLength;
+                this.engine.lastDataLength = currentLength;
+
+                if (isCollecting) {
+                    icon.style.boxShadow = '0 0 10px violet, 0 0 20px cyan';
+                } else {
+                    icon.style.boxShadow = '0 0 5px cyan';
+                }
+            }, 1000);
+
+            icon.onclick = () => {
+                this.removeMinimizedIcon();
+                GM_setValue(MINIMIZED_STATE_KEY, false);
+                this.root.classList.remove('minimized');
+                clearInterval(glowInterval);
+                this.renderView();
+            };
+
+            document.body.appendChild(icon);
+        }
+
+        removeMinimizedIcon() {
+            const icon = document.getElementById('sdp-minimized-icon');
+            if (icon) {
+                icon.remove();
+            }
+        }
+
+        async initialize() {
+            try {
+                console.log('🚀 Initializing Site Discovery Pro v5.1...');
+                
+                // Check if we should start minimized
+                const shouldBeMinimized = GM_getValue(MINIMIZED_STATE_KEY, false);
+                
+                await this.createUI();
+                this.attachEventListeners();
+                
+                if (shouldBeMinimized) {
+                    this.root.classList.add('minimized');
+                    this.createMinimizedIcon();
+                } else {
+                    // Start discovery and render
+                    await this.loadCachedTree();
+                }
+                
+                console.log('✅ Initialization complete');
+            } catch (error) {
+                console.error('❌ Initialization failed:', error);
+            }
+        }
+
+        async loadCachedTree() {
+            console.log('🔄 Loading cached data...');
+            
+            // Always start fresh discovery to ensure we get current page data
+            this.refreshDiscovery();
+        }
+
+        async renderView() {
+            const container = document.getElementById('view-container');
+            if (!container) return;
+
+            try {
+                switch (this.currentView) {
+                    case 'tree':
+                        await this.renderTreeView(container);
+                        break;
+                    case 'rootmap':
+                        await this.renderRootMapView(container);
+                        break;
+                    case 'stats':
+                        await this.renderStatsView(container);
+                        break;
+                    case 'unique':
+                        await this.renderUniqueVarsView(container);
+                        break;
+                }
+            } catch (error) {
+                console.error('Failed to render view:', error);
+                container.innerHTML = `<div class="loading">Error rendering view: ${error.message}</div>`;
+            }
+        }
+
+        async renderTreeView(container) {
+            console.log('🌳 Rendering tree view...');
+            const tree = this.storage.loadTree();
+            
+            container.innerHTML = `
+                <div class="tree-container">
+                    <div class="tree-section">
+                        <div class="tree-section-header frontend">Front-End Resources</div>
+                        <div class="tree-view" id="frontend-tree"></div>
+                    </div>
+                    <div class="tree-section">
+                        <div class="tree-section-header backend">Back-End Resources</div>
+                        <div class="tree-view" id="backend-tree"></div>
+                    </div>
+                </div>
+            `;
+
+            const frontendContainer = container.querySelector('#frontend-tree');
+            const backendContainer = container.querySelector('#backend-tree');
+
+            // Render frontend tree
+            if (tree.frontend && Object.keys(tree.frontend).length > 0) {
+                this.renderTreeNodes(tree.frontend, frontendContainer);
+            } else {
+                frontendContainer.innerHTML = '<div class="loading">No front-end resources discovered yet.</div>';
+            }
+
+            // Render backend tree
+            if (tree.backend && Object.keys(tree.backend).length > 0) {
+                this.renderTreeNodes(tree.backend, backendContainer);
+            } else {
+                backendContainer.innerHTML = '<div class="loading">No back-end resources discovered yet.</div>';
+            }
+        }
+
+        renderTreeNodes(tree, container, path = '') {
+            const entries = Object.entries(tree);
+            
+            entries.forEach(([name, node]) => {
+                const nodeDiv = document.createElement('div');
+                nodeDiv.className = `tree-node ${node.type}`;
+                
+                // Add file type classes
+                if (node.type === 'file' && node.extension) {
+                    if (['js', 'jsx', 'ts', 'tsx'].includes(node.extension)) {
+                        nodeDiv.classList.add('script');
+                    } else if (['css', 'scss', 'less'].includes(node.extension)) {
+                        nodeDiv.classList.add('style');
+                    } else if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(node.extension)) {
+                        nodeDiv.classList.add('image');
+                    }
+                }
+
+                // Check for sensitive paths
+                if (this.isSensitivePath(path + '/' + name)) {
+                    nodeDiv.classList.add('sensitive');
+                }
+
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'tree-node-content';
+                contentDiv.textContent = name;
+
+                // Store node data
+                contentDiv.dataset.nodePath = path + '/' + name;
+                contentDiv.dataset.nodeType = node.type;
+                contentDiv.dataset.nodeUrl = node.url || '';
+                contentDiv.dataset.nodeExtension = node.extension || '';
+                contentDiv.dataset.nodeItem = JSON.stringify(node.item || {});
+
+                nodeDiv.appendChild(contentDiv);
+
+                if (node.type === 'directory') {
+                    const childContainer = document.createElement('div');
+                    childContainer.className = 'tree-node-children';
+                    nodeDiv.appendChild(childContainer);
+
+                    // Directory click handler
+                    contentDiv.onclick = (e) => {
+                        e.stopPropagation();
+                        const isOpen = nodeDiv.classList.toggle('open');
+
+                        // Recursive open with Ctrl key
+                        if (e.ctrlKey && isOpen) {
+                            this.recursiveOpen(childContainer);
+                        }
+                    };
+
+                    // Render children
+                    if (node.children) {
+                        this.renderTreeNodes(node.children, childContainer, path + '/' + name);
+                    }
+                } else {
+                    // File hover handler
+                    contentDiv.onmouseenter = (e) => this.showPreview(e, node);
+                    contentDiv.onmouseleave = () => this.hidePreview();
+                }
+
+                container.appendChild(nodeDiv);
+            });
+        }
+
+        recursiveOpen(container) {
+            const directories = container.querySelectorAll('.tree-node.directory');
+            directories.forEach(dir => {
+                dir.classList.add('open');
+                const childContainer = dir.querySelector(':scope > .tree-node-children');
+                if (childContainer) {
+                    this.recursiveOpen(childContainer);
+                }
+            });
+        }
+
+        isSensitivePath(path) {
+            const sensitivePatterns = [
+                /admin/i, /config/i, /secret/i, /password/i, /token/i, /key/i,
+                /api.*key/i, /database/i, /backup/i, /\.env/i, /settings/i
+            ];
+            return sensitivePatterns.some(pattern => pattern.test(path));
+        }
+
+        showPreview(event, node) {
+            clearTimeout(this.hoverTimeout);
+            
+            this.hoverTimeout = setTimeout(() => {
+                if (this.currentPreview) {
+                    this.currentPreview.remove();
+                }
+
+                const preview = document.createElement('div');
+                preview.className = 'preview-tooltip';
+                
+                const content = `
+                    <div class="preview-header">
+                        <span>${node.extension ? `📄 ${node.extension.toUpperCase()}` : '📁 Directory'}</span>
+                        <span>${new Date(node.item?.timestamp || Date.now()).toLocaleString()}</span>
+                    </div>
+                    <div class="preview-body">
+                        <div><strong>Path:</strong> ${node.path}</div>
+                        <div><strong>URL:</strong> <a href="${node.url}" target="_blank" style="color: var(--sdp-accent-blue);">${node.url}</a></div>
+                        ${node.item?.type ? `<div><strong>Type:</strong> ${node.item.type}</div>` : ''}
+                        ${node.item?.method ? `<div><strong>Method:</strong> ${node.item.method}</div>` : ''}
+                        ${node.item?.status ? `<div><strong>Status:</strong> ${node.item.status}</div>` : ''}
+                        ${node.item?.title ? `<div><strong>Title:</strong> ${node.item.title}</div>` : ''}
+                        ${node.item?.responseSnippet ? `<div class="preview-content">${Utils.escapeHtml(node.item.responseSnippet)}</div>` : ''}
+                        ${node.item?.keys ? `<div><strong>Keys:</strong> ${node.item.keys.join(', ')}</div>` : ''}
+                    </div>
+                    <div class="preview-meta">
+                        <div>Click to open • Ctrl+Click to expand all</div>
+                    </div>
+                `;
+
+                preview.innerHTML = content;
+                
+                // Position preview
+                const rect = event.target.getBoundingClientRect();
+                const rootRect = this.root.getBoundingClientRect();
+                
+                preview.style.left = `${rect.left - rootRect.left}px`;
+                preview.style.top = `${rect.bottom - rootRect.top + 5}px`;
+                
+                // Adjust position if preview goes off screen
+                setTimeout(() => {
+                    const previewRect = preview.getBoundingClientRect();
+                    if (previewRect.right > window.innerWidth) {
+                        preview.style.left = `${rect.left - rootRect.left - previewRect.width + rect.width}px`;
+                    }
+                    if (previewRect.bottom > window.innerHeight) {
+                        preview.style.top = `${rect.top - rootRect.top - previewRect.height - 5}px`;
+                    }
+                }, 0);
+
+                // Keep preview open when hovering over it
+                preview.addEventListener('mouseenter', () => {
+                    clearTimeout(this.hoverTimeout);
+                });
+                
+                preview.addEventListener('mouseleave', () => {
+                    this.hidePreview();
+                });
+
+                this.root.appendChild(preview);
+                this.currentPreview = preview;
+                
+                // Trigger visibility with slight delay for smooth animation
+                setTimeout(() => {
+                    preview.classList.add('visible');
+                }, 10);
+            }, CONFIG.HOVER_DELAY_MS);
+        }
+
+        hidePreview() {
+            clearTimeout(this.hoverTimeout);
+            if (this.currentPreview) {
+                this.currentPreview.classList.remove('visible');
+                setTimeout(() => {
+                    if (this.currentPreview) {
+                        this.currentPreview.remove();
+                        this.currentPreview = null;
+                    }
+                }, 200);
+            }
+        }
+
+        async renderRootMapView(container) {
+            const tree = this.storage.loadTree();
+            const allNodes = [];
+
+            // Collect all nodes
+            const collectNodes = (nodes, prefix = '') => {
+                Object.entries(nodes).forEach(([name, node]) => {
+                    allNodes.push({
+                        name,
+                        path: prefix + name,
+                        ...node
+                    });
+                    if (node.children) {
+                        collectNodes(node.children, prefix + name + '/');
+                    }
+                });
+            };
+
+            if (tree.frontend) collectNodes(tree.frontend);
+            if (tree.backend) collectNodes(tree.backend);
+
+            container.innerHTML = `
+                <div class="tree-view">
+                    <h3 style="color: var(--sdp-accent-blue); margin-bottom: 16px;">🗺️ Site Root Map</h3>
+                    <div style="display: grid; gap: 8px;">
+                        ${allNodes.map(node => `
+                            <div class="tree-node-content" style="margin: 0;">
+                                <span style="color: ${node.type === 'directory' ? 'var(--sdp-accent-blue)' : 'var(--sdp-text-primary)'}">
+                                    ${node.type === 'directory' ? '📁' : '📄'} ${node.path}
+                                </span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        async renderStatsView(container) {
+            const meta = this.storage.loadMeta();
+            const stats = meta.statistics || {};
+            const memoryStats = stats.memoryUsage || {};
+
+            container.innerHTML = `
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Total Elements</h3>
+                        <div class="value">${stats.totalElements || 0}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Total URLs</h3>
+                        <div class="value">${stats.totalUrls || 0}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Shadow Roots</h3>
+                        <div class="value">${stats.shadowRoots || 0}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Unique Globals</h3>
+                        <div class="value">${stats.uniqueGlobals || 0}</div>
+                    </div>
+                    ${memoryStats.used ? `
+                        <div class="stat-card">
+                            <h3>Memory Usage</h3>
+                            <div class="value">${Math.round(memoryStats.usage)}%</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Heap Used</h3>
+                            <div class="value">${Utils.formatFileSize(memoryStats.used)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Heap Total</h3>
+                            <div class="value">${Utils.formatFileSize(memoryStats.total)}</div>
+                        </div>
+                        <div class="stat-card">
+                            <h3>Heap Limit</h3>
+                            <div class="value">${Utils.formatFileSize(memoryStats.limit)}</div>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+
+        async renderUniqueVarsView(container) {
+            const meta = this.storage.loadMeta();
+            const uniqueGlobals = meta.uniqueGlobals || {};
+
+            container.innerHTML = `
+                <div class="tree-view">
+                    <h3 style="color: var(--sdp-accent-blue); margin-bottom: 16px;">☬ Unique Global Variables</h3>
+                    <div style="display: grid; gap: 8px;">
+                        ${Object.entries(uniqueGlobals).map(([name, data]) => `
+                            <div class="tree-node-content" style="margin: 0;">
+                                <div style="font-weight: 500; color: var(--sdp-accent-purple);">${name}</div>
+                                <div style="font-size: 11px; color: var(--sdp-text-muted);">
+                                    ${data.constructor} • ${data.type} • ${data.count} properties
+                                </div>
+                                ${data.sample ? `<div style="font-size: 11px; color: var(--sdp-text-secondary); margin-top: 4px;">Sample: ${data.sample}</div>` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        refreshDiscovery() {
+            console.log('🔄 Refreshing discovery...');
+            this.engine.startDiscovery();
+            
+            // Re-render after a short delay
+            setTimeout(() => {
+                this.renderView();
+            }, 1000);
+        }
+
+        exportData() {
+            try {
+                const data = {
+                    siteData: this.engine.siteData,
+                    tree: this.storage.loadTree(),
+                    meta: this.storage.loadMeta(),
+                    timestamp: Date.now(),
+                    url: location.href
+                };
+
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `site-discovery-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+
+                console.log('💾 Data exported successfully');
+            } catch (error) {
+                console.error('Failed to export data:', error);
+            }
+        }
+
+        clearData() {
+            if (confirm('Are you sure you want to clear all discovered data?')) {
+                this.storage.clear();
+                this.engine.siteData = { front: [], back: [] };
+                this.renderView();
+                console.log('🗑️ Data cleared successfully');
+            }
+        }
+    }
+
+    // ==== MAIN INITIALIZATION ====
+    async function main() {
+        try {
+            // Initialize components
+            const storage = new ChunkedStorage(location.hostname);
+            engine = new DiscoveryEngine(storage);
+            const ui = new ProfessionalUI(engine, storage);
+
+            // Store global reference
+            window.SiteDiscoveryPro = { engine, storage, ui };
+
+            // Initialize UI
+            await ui.initialize();
+
+            // Set up persistence across page navigation
+            setupPersistence();
+
+            console.log('✅ Site Discovery Pro v5.1 initialized successfully');
+        } catch (error) {
+            console.error('❌ Failed to initialize Site Discovery Pro:', error);
+        }
+    }
+
+    function setupPersistence() {
+        // Handle page navigation within the same domain
+        let lastUrl = location.href;
+        
+        const checkNavigation = () => {
+            if (location.href !== lastUrl && location.hostname === new URL(lastUrl).hostname) {
+                console.log('🔄 Page navigation detected, updating discovery...');
+                lastUrl = location.href;
+                
+                // Update current page data
+                if (engine) {
+                    const pageEntry = {
+                        id: location.href,
+                        type: 'page',
+                        url: location.href,
+                        title: document.title || 'Current Page',
+                        timestamp: Date.now()
+                    };
+                    engine.addFrontEndData(pageEntry);
+                    
+                    // Re-render UI if available
+                    if (window.SiteDiscoveryPro && window.SiteDiscoveryPro.ui) {
+                        window.SiteDiscoveryPro.ui.renderView();
+                    }
+                }
+            }
+        };
+
+        // Check for navigation changes
+        setInterval(checkNavigation, 1000);
+
+        // Handle spa navigation
+        const originalPushState = history.pushState;
+        const originalReplaceState = history.replaceState;
+        
+        history.pushState = function() {
+            const result = originalPushState.apply(this, arguments);
+            checkNavigation();
+            return result;
+        };
+        
+        history.replaceState = function() {
+            const result = originalReplaceState.apply(this, arguments);
+            checkNavigation();
+            return result;
+        };
+
+        // Listen for popstate events
+        window.addEventListener('popstate', checkNavigation);
+    }
+
+    // Start the application
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', main);
+    } else {
+        main();
+    }
+})();

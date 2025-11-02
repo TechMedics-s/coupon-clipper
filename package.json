@@ -1,0 +1,24 @@
+{
+  "name": "techmedics-userscript-tests",
+  "version": "1.0.0",
+  "description": "Browser environment test runner for TechMedics Red Team userscript",
+  "main": "test-setup.js",
+  "scripts": {
+    "test": "node test-setup.js",
+    "test:headless": "node -e \"const runner = require('./test-setup.js'); const r = new runner(); r.initialize().then(() => r.loadUserscript()).then(() => r.runTests()).then(console.log).catch(console.error);\"",
+    "test:interactive": "node test-setup.js"
+  },
+  "dependencies": {
+    "puppeteer": "^21.5.0"
+  },
+  "devDependencies": {},
+  "keywords": [
+    "userscript",
+    "tampermonkey",
+    "testing",
+    "puppeteer",
+    "red-team"
+  ],
+  "author": "TechMedics Red Team Development Group",
+  "license": "MIT"
+}

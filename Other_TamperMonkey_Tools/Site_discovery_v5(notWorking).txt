@@ -1,0 +1,1783 @@
+// ==UserScript==
+// @name         Site Discovery Pro v5.0
+// @namespace    https://redteam.local/sitediscovery-pro
+// @version      5.0
+// @description  Professional red team site structure discovery tool with enhanced interactivity, multiple views, and robust error handling
+// @match        *://*/*
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @grant        GM_download
+// @author       CISO - RedTeam Leader
+// @connect      *
+// @run-at       document-start
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    // Initialize when ready - MOVE NETWORK MONITORING TO EARLY SETUP
+    console.log('Site Discovery Pro v5.0 Loading...', 'color: #58a6ff; font-weight: bold;');
+
+    // Set up network monitoring IMMEDIATELY (before page resources load)
+    console.log('🌐 Setting up early network monitoring...');
+    let earlyNetworkData = { front: [], back: [] };
+
+    // Early network monitoring setup
+    try {
+        const origOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function (method, url) {
+            console.log('🌐 Early intercepted XMLHttpRequest:', method, url);
+            this.addEventListener('load', function () {
+                console.log('🌐 Early XMLHttpRequest completed:', method, url, this.status);
+                if (this.status === 200) {
+                    const entry = {
+                        id: url,
+                        type: 'api',
+                        method,
+                        url,
+                        status: this.status,
+                        responseSnippet: this.responseText.slice(0, 200),
+                        timestamp: Date.now()
+                    };
+                    console.log('🌐 Adding early XMLHttpRequest entry:', entry);
+                    earlyNetworkData.back.push(entry);
+                }
+            });
+            return origOpen.apply(this, arguments);
+        };
+
+        const origFetch = window.fetch;
+        window.fetch = function (resource, init = {}) {
+            console.log('🌐 Early intercepted fetch:', resource, init.method || 'GET');
+            return origFetch.apply(this, arguments).then(resp => {
+                console.log('🌐 Early fetch completed:', resource.toString(), resp.status);
+                const clone = resp.clone();
+                clone.text().then(txt => {
+                    if (resp.ok) {
+                        const entry = {
+                            id: resource.toString(),
+                            type: 'fetch',
+                            method: init.method || 'GET',
+                            url: resource.toString(),
+                            status: resp.status,
+                            responseSnippet: txt.slice(0, 200),
+                            timestamp: Date.now()
+                        };
+                        console.log('🌐 Adding early fetch entry:', entry);
+                        earlyNetworkData.back.push(entry);
+                    }
+                }).catch(() => { });
+                return resp;
+            });
+        };
+
+        console.log('✅ Early network monitoring setup complete');
+    } catch (e) {
+        console.error('❌ Early network monitoring failed:', e);
+    }
+
+    // ==== CONFIGURATION ====
+    const CONFIG = {
+        TOOL_NAME: "Site Discovery Pro v5.0",
+        UI_ROOT_ID: 'sdp-ui-root-v5',
+        STORAGE_PREFIX: 'sdp_v5_',
+        CHUNK_SIZE: 100,
+        MAX_RECURSION_DEPTH: 50,
+        CACHE_DURATION_DAYS: 30,
+        DEBOUNCE_SAVE_MS: 3000,
+        HOVER_DELAY_MS: 1000,
+        MAX_PREVIEW_SIZE: 5000,
+        STANDARD_GLOBALS_COUNT: 1000,
+        MAX_RETRIES: 3
+    };
+
+    const DEBUG_MODE_KEY = 'sd_debug_mode';
+    const MINIMIZED_STATE_KEY = 'sd_minimized_' + location.hostname;
+    const MINIMIZED_ICON_PATH = 'ICON.png';
+    const PANEL_FRONT_ID = 'sdp-front-panel';
+    const PANEL_BACK_ID = 'sdp-back-panel';
+    const UI_ID = CONFIG.UI_ROOT_ID;
+    const iconId = 'sdp-minimized-icon';
+    let lastDataLength = 0;
+    let engine; // Global reference to engine instance
+
+    const COLOR_SCHEME = {
+        front: '#28a745',
+   // green for front-end pages
+        source: '#17a2b8',
+   // teal for source files
+        dependency: '#ffc107',
+   // amber for dependencies
+        database: '#6f42c1',
+   // purple for databases
+        back: '#6f42c1',
+   // alias for back-end panel
+        sensitive: '#ff00ff'
+   // bright violet for sensitive items
+    };
+
+    // ==== UTILITY FUNCTIONS ====
+    const Utils = {
+        escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        },
+
+        formatFileSize(bytes) {
+            if (!bytes || bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        },
+
+        debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        },
+
+        async retry(fn, maxRetries = CONFIG.MAX_RETRIES) {
+            for (let i = 0; i <= maxRetries; i++) {
+                try {
+                    return await fn();
+                } catch (error) {
+                    if (i === maxRetries) throw error;
+                    await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, i)));
+                }
+            }
+        },
+
+        safeJSONParse(str, fallback = null) {
+            try {
+                return JSON.parse(str);
+            } catch (e) {
+                console.warn('JSON parse failed:', e);
+                return fallback;
+            }
+        },
+
+        safeJSONStringify(obj, fallback = '{}') {
+            try {
+                return JSON.stringify(obj);
+            } catch (e) {
+                console.warn('JSON stringify failed:', e);
+                return fallback;
+            }
+        }
+    };
+
+    // ==== ENHANCED DISCOVERY ENGINE ====
+    class DiscoveryEngine {
+        constructor(storage) {
+            this.storage = storage;
+            this.siteData = storage.loadData();
+            this.lastDataLength = (this.siteData.front?.length || 0) + (this.siteData.back?.length || 0);
+            this.memoryUsage = [];
+            this.processing = false;
+            this.visitedUrls = new Set();
+            this.discoveryQueue = [];
+        }
+
+        dedupeAdd(collection, item) {
+            if (!collection.some(i => i.id === item.id)) {
+                collection.push(item);
+            }
+        }
+
+        async startDiscovery() {
+            if (this.processing) return;
+            this.processing = true;
+
+            try {
+                console.log(' Starting enhanced discovery...');
+                console.log('📊 Initial siteData:', this.siteData);
+
+                // FORCE ADD SOME TEST DATA TO SEE IF UI WORKS
+                console.log('Adding test data to verify UI functionality...');
+
+                // Add current page
+                const pageEntry = {
+                    id: location.href,
+                    type: 'page',
+                    url: location.href,
+                    title: document.title || 'Current Page',
+                    timestamp: Date.now()
+                };
+                this.dedupeAdd(this.siteData.front, pageEntry);
+
+                // Add some test API entries to see if they show up
+                const testEntries = [
+                    {
+                        id: location.origin + '/api/test1',
+                        type: 'api',
+                        method: 'GET',
+                        url: location.origin + '/api/test1',
+                        status: 200,
+                        responseSnippet: '{"test": "data1"}',
+                        timestamp: Date.now()
+                    },
+                    {
+                        id: location.origin + '/api/test2',
+                        type: 'fetch',
+                        method: 'POST',
+                        url: location.origin + '/api/test2',
+                        status: 200,
+                        responseSnippet: '{"test": "data2"}',
+                        timestamp: Date.now()
+                    }
+                ];
+
+                testEntries.forEach(entry => {
+                    this.dedupeAdd(this.siteData.back, entry);
+                });
+
+                console.log('🧪 Test data added - front:', this.siteData.front.length, 'back:', this.siteData.back.length);
+
+                // Merge any early network data that was collected
+                if (typeof earlyNetworkData !== 'undefined' && earlyNetworkData.back.length > 0) {
+                    console.log('🌐 Merging early network data:', earlyNetworkData.back.length, 'entries');
+                    earlyNetworkData.back.forEach(entry => {
+                        this.dedupeAdd(this.siteData.back, entry);
+                    });
+                    console.log('🌐 After merging early data, siteData.back:', this.siteData.back.length);
+                }
+
+                console.log('📊 After page entry, siteData.front:', this.siteData.front.length);
+
+                // Capture globals
+                this.captureGlobals();
+                console.log('📊 After captureGlobals, siteData.front:', this.siteData.front.length);
+
+                // Monitor network (this will catch future requests)
+                this.monitorNetwork();
+
+                // Analyze heap snapshot
+                this.analyzeHeapSnapshot();
+                console.log('📊 After analyzeHeapSnapshot, siteData.back:', this.siteData.back.length);
+
+                // Build tree structure
+                const tree = this.buildTree();
+                console.log(' Built tree:', tree);
+                console.log(' Tree has', Object.keys(tree).length, 'root nodes');
+                this.storage.saveTree(tree);
+
+                // Save meta information
+                const meta = this.buildMeta();
+                this.storage.saveMeta(meta);
+
+                // Save data
+                this.storage.saveData(this.siteData);
+                console.log('Discovery completed, final siteData:', this.siteData);
+                console.log('Final counts - front:', this.siteData.front.length, 'back:', this.siteData.back.length);
+
+                console.log('✅ Discovery completed successfully');
+            } catch (error) {
+                console.error('❌ Discovery failed:', error);
+                console.error('❌ Error stack:', error.stack);
+            } finally {
+                this.processing = false;
+            }
+        }
+
+        captureGlobals() {
+            try {
+                const uniqueGlobals = {};
+                let count = 0;
+
+                for (const key in window) {
+                    if (!Object.prototype.hasOwnProperty.call(window, key)) continue;
+                    if (count >= CONFIG.STANDARD_GLOBALS_COUNT) break;
+
+                    const val = window[key];
+                    if (val && typeof val === 'object' && !Array.isArray(val)) {
+                        const keys = Object.keys(val);
+                        if (keys.length > 5) {
+                            const objEntry = {
+                                id: `${location.href}::${key}`,
+                                type: 'object',
+                                name: key,
+                                keys: keys.slice(0, 10),
+                                timestamp: Date.now()
+                            };
+                            this.dedupeAdd(this.siteData.front, objEntry);
+
+                            // Track for unique globals view
+                            const constructor = val.constructor ? val.constructor.name : 'Object';
+                            uniqueGlobals[key] = {
+                                type: typeof val,
+                                constructor: constructor,
+                                sample: this.getSampleValue(val),
+                                count: keys.length
+                            };
+
+                            count++;
+                        }
+                    }
+                }
+
+                // Store unique globals for statistics view
+                const meta = this.storage.loadMeta();
+                meta.uniqueGlobals = uniqueGlobals;
+                this.storage.saveMeta(meta);
+
+            } catch (e) {
+                console.error('[SiteDiscovery] captureGlobals error', e);
+            }
+        }
+
+        getSampleValue(obj) {
+            try {
+                const keys = Object.keys(obj);
+                if (keys.length === 0) return null;
+
+                const firstKey = keys[0];
+                const value = obj[firstKey];
+
+                if (typeof value === 'string' && value.length > 50) {
+                    return value.substring(0, 50) + '...';
+                }
+                return value;
+            } catch (e) {
+                return '[Error getting sample]';
+            }
+        }
+
+        monitorNetwork() {
+            try {
+                const self = this; // Store reference to engine instance
+                console.log('Setting up network monitoring...');
+
+                const origOpen = XMLHttpRequest.prototype.open;
+                XMLHttpRequest.prototype.open = function (method, url) {
+                    console.log('Intercepted XMLHttpRequest:', method, url);
+                    this.addEventListener('load', function () {
+                        console.log('XMLHttpRequest completed:', method, url, this.status);
+                        if (this.status === 200) {
+                            const entry = {
+                                id: url,
+                                type: 'api',
+                                method,
+                                url,
+                                status: this.status,
+                                responseSnippet: this.responseText.slice(0, 200),
+                                timestamp: Date.now()
+                            };
+                            console.log('Adding XMLHttpRequest entry:', entry);
+                            self.dedupeAdd(self.siteData.back, entry);
+                        }
+                    });
+                    return origOpen.apply(this, arguments);
+                };
+
+                const origFetch = window.fetch;
+                window.fetch = function (resource, init = {}) {
+                    console.log('Intercepted fetch:', resource, init.method || 'GET');
+                    return origFetch.apply(this, arguments).then(resp => {
+                        console.log('Fetch completed:', resource.toString(), resp.status);
+                        const clone = resp.clone();
+                        clone.text().then(txt => {
+                            if (resp.ok) {
+                                const entry = {
+                                    id: resource.toString(),
+                                    type: 'fetch',
+                                    method: init.method || 'GET',
+                                    url: resource.toString(),
+                                    status: resp.status,
+                                    responseSnippet: txt.slice(0, 200),
+                                    timestamp: Date.now()
+                                };
+                                console.log('Adding fetch entry:', entry);
+                                self.dedupeAdd(self.siteData.back, entry);
+                            }
+                        }).catch(() => { });
+                        return resp;
+                    });
+                };
+
+                console.log('Network monitoring setup complete');
+            } catch (e) {
+                console.error('[SiteDiscovery] monitorNetwork error', e);
+            }
+        }
+
+        analyzeHeapSnapshot() {
+            try {
+                if (typeof performance !== 'undefined' && performance.memory) {
+                    const heapData = {
+                        timestamp: Date.now(),
+                        usedJSHeapSize: performance.memory.usedJSHeapSize,
+                        totalJSHeapSize: performance.memory.totalJSHeapSize,
+                        jsHeapSizeLimit: performance.memory.jsHeapSizeLimit,
+                        objects: []
+                    };
+
+                    for (const key in window) {
+                        if (!Object.prototype.hasOwnProperty.call(window, key)) continue;
+                        const val = window[key];
+                        if (val && typeof val === 'object' && !Array.isArray(val)) {
+                            try {
+                                const keys = Object.keys(val);
+                                if (keys.length > 0) {
+                                    heapData.objects.push({
+                                        name: key,
+                                        type: 'object',
+                                        propertyCount: keys.length,
+                                        properties: keys.slice(0, 5)
+                                    });
+                                }
+                            } catch (e) {
+                                // Skip objects that can't be analyzed
+                            }
+                        }
+                    }
+
+                    const heapEntry = {
+                        id: location.href + '::heap',
+                        type: 'heap-analysis',
+                        url: location.href,
+                        data: heapData,
+                        timestamp: Date.now()
+                    };
+
+                    this.dedupeAdd(this.siteData.back, heapEntry);
+                }
+            } catch (e) {
+                console.error('[SiteDiscovery] Heap snapshot analysis error', e);
+            }
+        }
+
+        buildTree() {
+            const tree = {};
+            const allItems = [...(this.siteData.front || []), ...(this.siteData.back || [])];
+
+            allItems.forEach(item => {
+                if (item.url) {
+                    try {
+                        const urlObj = new URL(item.url, location.origin);
+                        if (urlObj.hostname !== location.hostname) return;
+
+                        const parts = urlObj.pathname.split('/').filter(p => p);
+                        let current = tree;
+
+                        parts.forEach((part, index) => {
+                            const isLast = index === parts.length - 1;
+                            const fileExt = isLast ? this.getFileExtension(part) : null;
+
+                            if (!current[part]) {
+                                current[part] = {
+                                    type: isLast ? 'file' : 'directory',
+                                    extension: fileExt,
+                                    url: urlObj.href,
+                                    path: '/' + parts.slice(0, index + 1).join('/'),
+                                    children: isLast ? undefined : {}
+                                };
+                            }
+
+                            if (!isLast && current[part].children) {
+                                current = current[part].children;
+                            }
+                        });
+                    } catch (e) {
+                        // Invalid URL
+                    }
+                }
+            });
+
+            return this.sortTree(tree);
+        }
+
+        sortTree(tree) {
+            const sorted = {};
+            const entries = Object.entries(tree);
+
+            entries.sort((a, b) => {
+                const aIsDir = a[1].type === 'directory';
+                const bIsDir = b[1].type === 'directory';
+
+                if (aIsDir && !bIsDir) return -1;
+                if (!aIsDir && bIsDir) return 1;
+                return a[0].localeCompare(b[0]);
+            });
+
+            entries.forEach(([key, value]) => {
+                sorted[key] = value;
+                if (value.children) {
+                    sorted[key].children = this.sortTree(value.children);
+                }
+            });
+
+            return sorted;
+        }
+
+        getFileExtension(filename) {
+            const match = filename.match(/\.([^.]+)$/);
+            return match ? match[1].toLowerCase() : null;
+        }
+
+        buildMeta() {
+            const meta = this.storage.loadMeta();
+            meta.statistics = {
+                totalElements: (this.siteData.front?.length || 0) + (this.siteData.back?.length || 0),
+                totalUrls: (this.siteData.front?.filter(item => item.url).length || 0) +
+                          (this.siteData.back?.filter(item => item.url).length || 0),
+                shadowRoots: this.siteData.front?.filter(item => item.type === 'shadow-root').length || 0,
+                uniqueGlobals: Object.keys(meta.uniqueGlobals || {}).length,
+                timestamp: Date.now()
+            };
+            return meta;
+        }
+
+        // Memory tracking for debug mode
+        trackMemory() {
+            if (typeof performance !== 'undefined' && performance.memory) {
+                const mem = performance.memory;
+                this.memoryUsage.push({
+                    timestamp: Date.now(),
+                    used: mem.usedJSHeapSize,
+                    total: mem.totalJSHeapSize,
+                    limit: mem.jsHeapSizeLimit
+                });
+            }
+        }
+
+        isDebugMode() {
+            return GM_getValue(DEBUG_MODE_KEY, false);
+        }
+    }
+
+    // ==== MEMORY-OPTIMIZED STORAGE WITH ENHANCED ERROR HANDLING ====
+    class ChunkedStorage {
+        constructor(domain) {
+            this.domain = domain.replace(/[^a-zA-Z0-9]/g, '_');
+            this.indexKey = `${CONFIG.STORAGE_PREFIX}index_${this.domain}`;
+            this.chunkPrefix = `${CONFIG.STORAGE_PREFIX}chunk_${this.domain}_`;
+            this.treeKey = `${CONFIG.STORAGE_PREFIX}tree_${this.domain}`;
+            this.metaKey = `${CONFIG.STORAGE_PREFIX}meta_${this.domain}`;
+            this.backupKey = `${CONFIG.STORAGE_PREFIX}backup_${this.domain}`;
+        }
+
+        loadData() {
+            try {
+                const raw = GM_getValue(this.dataKey, '{}');
+                return Utils.safeJSONParse(raw, { front: [], back: [] });
+            } catch (error) {
+                console.error('Failed to load data:', error);
+                return { front: [], back: [] };
+            }
+        }
+
+        saveData(data) {
+            try {
+                GM_setValue(this.dataKey, Utils.safeJSONStringify(data));
+            } catch (error) {
+                console.error('Failed to save data:', error);
+            }
+        }
+
+        loadTree() {
+            try {
+                const raw = GM_getValue(this.treeKey, '{}');
+                return Utils.safeJSONParse(raw, {});
+            } catch (error) {
+                console.error('Failed to load tree:', error);
+                return {};
+            }
+        }
+
+        saveTree(tree) {
+            try {
+                GM_setValue(this.treeKey, Utils.safeJSONStringify(tree));
+            } catch (error) {
+                console.error('Failed to save tree:', error);
+            }
+        }
+
+        loadMeta() {
+            try {
+                const raw = GM_getValue(this.metaKey, '{}');
+                return Utils.safeJSONParse(raw, {
+                    statistics: {
+                        totalElements: 0,
+                        totalUrls: 0,
+                        shadowRoots: 0,
+                        uniqueGlobals: 0,
+                        timestamp: Date.now()
+                    }
+                });
+            } catch (error) {
+                console.error('Failed to load meta:', error);
+                return {
+                    statistics: {
+                        totalElements: 0,
+                        totalUrls: 0,
+                        shadowRoots: 0,
+                        uniqueGlobals: 0,
+                        timestamp: Date.now()
+                    }
+                };
+            }
+        }
+
+        saveMeta(meta) {
+            try {
+                GM_setValue(this.metaKey, Utils.safeJSONStringify(meta));
+            } catch (error) {
+                console.error('Failed to save meta:', error);
+            }
+        }
+
+        clear() {
+            try {
+                GM_deleteValue(this.dataKey);
+                GM_deleteValue(this.treeKey);
+                GM_deleteValue(this.metaKey);
+            } catch (error) {
+                console.error('Failed to clear storage:', error);
+            }
+        }
+
+        // Add missing dataKey property
+        get dataKey() {
+            return `${CONFIG.STORAGE_PREFIX}data_${this.domain}`;
+        }
+
+        isExpired() {
+            const meta = this.loadMeta();
+            const age = Date.now() - (meta.statistics?.timestamp || 0);
+            return age > (CONFIG.CACHE_DURATION_DAYS * 24 * 60 * 60 * 1000);
+        }
+    }
+    class ProfessionalUI {
+        constructor(engine, storage) {
+            this.engine = engine;
+            this.storage = storage;
+            this.root = null;
+            this.currentView = 'tree';
+            this.previewCache = new Map();
+            this.currentPreview = null;
+            this.hoverTimeout = null;
+            this.activeNode = null;
+        }
+
+        injectStyles() {
+            const style = document.createElement('style');
+            style.textContent = `
+                /* PROFESSIONAL DARK THEME */
+                :root {
+                    --sdp-bg-primary: #0d1117;
+                    --sdp-bg-secondary: #161b22;
+                    --sdp-bg-tertiary: #21262d;
+                    --sdp-text-primary: #f0f6fc;
+                    --sdp-text-secondary: #8b949e;
+                    --sdp-text-muted: #656d76;
+                    --sdp-accent-blue: #58a6ff;
+                    --sdp-accent-purple: #a5a5ff;
+                    --sdp-accent-green: #7ee787;
+                    --sdp-accent-orange: #ffa657;
+                    --sdp-accent-red: #f85149;
+                    --sdp-accent-yellow: #ffc107;
+                    --sdp-accent-pink: #ff00ff;
+                    --sdp-border-default: #30363d;
+                    --sdp-border-muted: #21262d;
+                    --sdp-shadow-default: 0 8px 24px rgba(1, 4, 9, 0.8);
+                    --sdp-shadow-large: 0 16px 32px rgba(1, 4, 9, 0.9);
+                    --sdp-glow-blue: 0 0 0 1px rgba(88, 166, 255, 0.4);
+                    --sdp-glow-purple: 0 0 0 1px rgba(165, 165, 255, 0.4);
+                    --sdp-transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+                }
+
+                #${CONFIG.UI_ROOT_ID} {
+                    position: fixed;
+                    right: 20px;
+                    bottom: 20px;
+                    width: 720px;
+                    max-height: 85vh;
+                    background: var(--sdp-bg-primary);
+                    border: 1px solid var(--sdp-border-default);
+                    border-radius: 12px;
+                    box-shadow: var(--sdp-shadow-large);
+                    z-index: 2147483647;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+                    color: var(--sdp-text-primary);
+                    overflow: hidden;
+                    display: flex;
+                    flex-direction: column;
+                    transition: var(--sdp-transition);
+                    backdrop-filter: blur(10px);
+                }
+
+                #${CONFIG.UI_ROOT_ID}::before {
+                    content: '';
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    right: 0;
+                    height: 1px;
+                    background: linear-gradient(90deg, transparent, var(--sdp-accent-blue), transparent);
+                }
+
+                #${CONFIG.UI_ROOT_ID}.minimized {
+                    width: 64px;
+                    height: 64px;
+                    border-radius: 50%;
+                    background: var(--sdp-bg-secondary);
+                    box-shadow: var(--sdp-glow-purple), var(--sdp-shadow-default);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .warning-banner {
+                    background: linear-gradient(135deg, var(--sdp-accent-red), #d73a49);
+                    color: white;
+                    padding: 6px 16px;
+                    text-align: center;
+                    font-size: 10px;
+                    font-weight: 600;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header {
+                    background: var(--sdp-bg-secondary);
+                    padding: 16px 20px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    border-bottom: 1px solid var(--sdp-border-default);
+                    cursor: move;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header h2 {
+                    margin: 0;
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: var(--sdp-text-primary);
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header h2::before {
+                    content: '🔧';
+                    font-size: 16px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header .controls {
+                    display: flex;
+                    gap: 6px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header button {
+                    background: var(--sdp-bg-tertiary);
+                    border: 1px solid var(--sdp-border-default);
+                    color: var(--sdp-text-secondary);
+                    padding: 6px 10px;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    font-size: 11px;
+                    font-weight: 500;
+                    transition: var(--sdp-transition);
+                    min-width: 28px;
+                    height: 28px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .header button:hover {
+                    background: var(--sdp-accent-blue);
+                    border-color: var(--sdp-accent-blue);
+                    color: white;
+                    transform: translateY(-1px);
+                    box-shadow: 0 4px 12px rgba(88, 166, 255, 0.4);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tabs {
+                    background: var(--sdp-bg-secondary);
+                    padding: 8px 20px;
+                    display: flex;
+                    gap: 4px;
+                    border-bottom: 1px solid var(--sdp-border-default);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tabs button {
+                    background: transparent;
+                    border: none;
+                    color: var(--sdp-text-secondary);
+                    padding: 8px 14px;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    font-weight: 500;
+                    transition: var(--sdp-transition);
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tabs button:hover {
+                    background: var(--sdp-bg-tertiary);
+                    color: var(--sdp-text-primary);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tabs button.active {
+                    background: var(--sdp-bg-tertiary);
+                    color: var(--sdp-accent-blue);
+                    box-shadow: var(--sdp-glow-blue);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .content {
+                    background: var(--sdp-bg-primary);
+                    flex: 1;
+                    overflow: hidden;
+                    display: flex;
+                    flex-direction: column;
+                    position: relative;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-view {
+                    padding: 16px;
+                    overflow-y: auto;
+                    flex: 1;
+                    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+                    font-size: 13px;
+                    line-height: 1.5;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node {
+                    margin-left: 20px;
+                    position: relative;
+                    user-select: none;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node-content {
+                    display: flex;
+                    align-items: center;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    transition: var(--sdp-transition);
+                    position: relative;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node-content:hover {
+                    background: var(--sdp-bg-tertiary);
+                    color: var(--sdp-text-primary);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.directory > .tree-node-content {
+                    font-weight: 500;
+                    color: var(--sdp-accent-blue);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.directory > .tree-node-content::before {
+                    content: '📁';
+                    margin-right: 8px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.directory.open > .tree-node-content::before {
+                    content: '📂';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file > .tree-node-content {
+                    color: var(--sdp-text-primary);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file > .tree-node-content::before {
+                    content: '📄';
+                    margin-right: 8px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.script > .tree-node-content {
+                    color: var(--sdp-accent-green);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.script > .tree-node-content::before {
+                    content: '📜';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.style > .tree-node-content {
+                    color: var(--sdp-accent-purple);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.style > .tree-node-content::before {
+                    content: '🎨';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.image > .tree-node-content {
+                    color: var(--sdp-accent-orange);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.file.image > .tree-node-content::before {
+                    content: '🖼️';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.shadow {
+                    color: var(--sdp-accent-purple);
+                    font-style: italic;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.shadow > .tree-node-content::before {
+                    content: '👻';
+                }
+
+                #${CONFIG.UI_ROOT_ID} .tree-node.sensitive > .tree-node-content {
+                    color: var(--sdp-accent-red) !important;
+                    animation: pulse-glow 2s infinite;
+                }
+
+                @keyframes pulse-glow {
+                    0%, 100% { box-shadow: 0 0 5px rgba(248, 81, 73, 0.3); }
+                    50% { box-shadow: 0 0 15px rgba(248, 81, 73, 0.6); }
+                }
+
+                #${CONFIG.UI_ROOT_ID} .preview-tooltip {
+                    position: absolute;
+                    background: var(--sdp-bg-secondary);
+                    border: 1px solid var(--sdp-border-default);
+                    border-radius: 8px;
+                    padding: 12px;
+                    max-width: 400px;
+                    max-height: 300px;
+                    overflow: auto;
+                    box-shadow: var(--sdp-shadow-default);
+                    z-index: 1000;
+                    font-size: 12px;
+                    line-height: 1.4;
+                    backdrop-filter: blur(10px);
+                    pointer-events: none;
+                    opacity: 0;
+                    transform: translateY(10px);
+                    transition: opacity 0.2s, transform 0.2s;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .preview-tooltip.visible {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+
+                #${CONFIG.UI_ROOT_ID} .stats-grid {
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                    gap: 12px;
+                    padding: 20px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .stat-card {
+                    background: var(--sdp-bg-secondary);
+                    border: 1px solid var(--sdp-border-default);
+                    border-radius: 8px;
+                    padding: 16px;
+                    text-align: center;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .stat-card h3 {
+                    margin: 0 0 8px 0;
+                    font-size: 12px;
+                    color: var(--sdp-text-secondary);
+                    font-weight: 500;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .stat-card .value {
+                    font-size: 24px;
+                    font-weight: 700;
+                    color: var(--sdp-accent-blue);
+                    margin-bottom: 4px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} .loading {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 40px;
+                    color: var(--sdp-text-muted);
+                    font-style: italic;
+                }
+
+                /* Scrollbar styling */
+                #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar {
+                    width: 6px;
+                    height: 6px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar-track {
+                    background: var(--sdp-bg-secondary);
+                }
+
+                #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar-thumb {
+                    background: var(--sdp-border-default);
+                    border-radius: 3px;
+                }
+
+                #${CONFIG.UI_ROOT_ID} ::-webkit-scrollbar-thumb:hover {
+                    background: var(--sdp-text-muted);
+                }
+            `;
+            document.head.appendChild(style);
+        }
+
+        async createUI() {
+            const root = document.createElement('div');
+            root.id = CONFIG.UI_ROOT_ID;
+            root.innerHTML = `
+                <div class="warning-banner">
+                    ⚠️ Red Team Tool - Authorized Use Only ⚠️
+                </div>
+                <div class="header">
+                    <h2>${CONFIG.TOOL_NAME}</h2>
+                    <div class="controls">
+                        <button class="refresh-btn" title="Refresh Discovery">↺</button>
+                        <button class="export-btn" title="Export Data">💾</button>
+                        <button class="clear-btn" title="Clear Data">🗑️</button>
+                        <button class="minimize-btn" title="Minimize">⥎</button>
+                        <button class="close-btn" title="Close">⤫</button>
+                    </div>
+                </div>
+                <div class="tabs">
+                    <button class="tab-btn active" data-view="tree">🌳 Tree View</button>
+                    <button class="tab-btn" data-view="rootmap">🗺️ Root Map</button>
+                    <button class="tab-btn" data-view="stats">📊 Statistics</button>
+                    <button class="tab-btn" data-view="unique">☬ Unique Vars</button>
+                </div>
+                <div class="content">
+                    <div id="view-container"></div>
+                </div>
+            `;
+            document.body.appendChild(root);
+            this.root = root;
+        }
+
+        attachEventListeners() {
+            const root = this.root;
+
+            // Header controls
+            root.querySelector('.refresh-btn').onclick = () => this.refreshDiscovery();
+            root.querySelector('.export-btn').onclick = () => this.exportData();
+            root.querySelector('.clear-btn').onclick = () => this.clearData();
+            root.querySelector('.minimize-btn').onclick = () => this.toggleMinimize();
+            root.querySelector('.close-btn').onclick = () => root.remove();
+
+            // Tab switching
+            root.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.onclick = () => {
+                    root.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    this.currentView = btn.dataset.view;
+                    this.renderView();
+                };
+            });
+
+            // Global click handler to hide previews
+            document.addEventListener('click', (e) => {
+                if (!root.contains(e.target)) {
+                    this.hidePreview();
+                }
+            });
+
+            // Make draggable
+            this.makeDraggable(root);
+        }
+
+        makeDraggable(element) {
+            const header = element.querySelector('.header');
+            let isDragging = false;
+            let startX, startY, initialX, initialY;
+
+            header.addEventListener('mousedown', (e) => {
+                if (e.target.tagName === 'BUTTON') return;
+                isDragging = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                const rect = element.getBoundingClientRect();
+                initialX = rect.left;
+                initialY = rect.top;
+                document.body.style.userSelect = 'none';
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                element.style.left = `${initialX + dx}px`;
+                element.style.top = `${initialY + dy}px`;
+                element.style.right = 'auto';
+                element.style.bottom = 'auto';
+            });
+
+            document.addEventListener('mouseup', () => {
+                isDragging = false;
+                document.body.style.userSelect = '';
+            });
+        }
+
+        toggleMinimize() {
+            const root = this.root;
+            const isMinimized = root.classList.toggle('minimized');
+
+            // Save minimized state
+            GM_setValue(MINIMIZED_STATE_KEY, isMinimized);
+
+            if (isMinimized) {
+                // Create minimized icon
+                this.createMinimizedIcon();
+            }
+        }
+
+        createMinimizedIcon() {
+            if (document.getElementById('sdp-minimized-icon')) return;
+
+            const icon = document.createElement('div');
+            icon.id = 'sdp-minimized-icon';
+            icon.style.cssText = `
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                width: 64px;
+                height: 64px;
+                background: url('${MINIMIZED_ICON_PATH}') center/contain no-repeat;
+                cursor: pointer;
+                z-index: 2147483647;
+                border-radius: 50%;
+                box-shadow: 0 0 5px cyan;
+                transition: box-shadow 0.25s ease-in-out;
+            `;
+
+            // Add glow animation
+            let isCollecting = false;
+            let glowInterval = null;
+
+            const updateGlow = () => {
+                const currentLength = (this.engine.siteData.front?.length || 0) +
+                                    (this.engine.siteData.back?.length || 0);
+                isCollecting = currentLength > this.engine.lastDataLength;
+                this.engine.lastDataLength = currentLength;
+
+                if (isCollecting) {
+                    icon.style.boxShadow = '0 0 10px violet, 0 0 20px cyan';
+                } else {
+                    icon.style.boxShadow = '0 0 5px cyan';
+                }
+            };
+
+            glowInterval = setInterval(updateGlow, 1000);
+
+            icon.onclick = () => {
+                icon.remove();
+                GM_setValue(MINIMIZED_STATE_KEY, false);
+                this.root.classList.remove('minimized');
+                clearInterval(glowInterval);
+                this.renderView();
+            };
+
+            document.body.appendChild(icon);
+        }
+
+        async loadCachedTree() {
+            console.log('🔄 loadCachedTree called...');
+
+            // Always start fresh discovery to ensure we get current page data
+            console.log('🆕 Starting fresh discovery to ensure current data...');
+            this.refreshDiscovery();
+        }
+
+        async renderView() {
+            const container = document.getElementById('view-container');
+            if (!container) {
+                console.log('No view container found!');
+                return;
+            }
+
+            console.log('Rendering view:', this.currentView);
+            console.log('Engine siteData:', this.engine.siteData);
+
+            try {
+                switch (this.currentView) {
+                    case 'tree':
+                        await this.renderTreeView(container);
+                        break;
+                    case 'rootmap':
+                        await this.renderRootMapView(container);
+                        break;
+                    case 'stats':
+                        await this.renderStatsView(container);
+                        break;
+                    case 'unique':
+                        await this.renderUniqueVarsView(container);
+                        break;
+                }
+            } catch (error) {
+                console.error('Failed to render view:', error);
+                container.innerHTML = `<div class="loading">Error rendering view: ${error.message}</div>`;
+            }
+        }
+
+        async renderTreeView(container) {
+            console.log('🌳 Rendering tree view...');
+            const tree = this.storage.loadTree();
+            console.log('📊 Loaded tree data:', tree);
+            console.log('📊 Tree keys:', Object.keys(tree));
+
+            container.innerHTML = '<div class="tree-view" id="tree-container"></div>';
+            const treeContainer = container.querySelector('#tree-container');
+
+            if (Object.keys(tree).length === 0) {
+                console.log('⚠️ No tree data found, showing message');
+                treeContainer.innerHTML = '<div class="loading">No resources discovered yet. Click refresh to start discovery.</div>';
+                return;
+            }
+
+            console.log('🌲 Rendering tree nodes...');
+
+            const renderNode = (node, name, parent, path = '') => {
+                console.log('📁 Rendering node:', name, node);
+                const nodeDiv = document.createElement('div');
+                nodeDiv.className = `tree-node ${node.type}`;
+
+                // Add file type classes
+                if (node.type === 'file' && node.extension) {
+                    if (['js', 'jsx', 'ts', 'tsx'].includes(node.extension)) {
+                        nodeDiv.classList.add('script');
+                    } else if (['css', 'scss', 'less'].includes(node.extension)) {
+                        nodeDiv.classList.add('style');
+                    } else if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp'].includes(node.extension)) {
+                        nodeDiv.classList.add('image');
+                    }
+                }
+
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'tree-node-content';
+                contentDiv.textContent = name;
+                contentDiv.dataset.nodePath = path + '/' + name;
+                contentDiv.dataset.nodeType = node.type;
+                contentDiv.dataset.nodeUrl = node.url || '';
+                contentDiv.dataset.nodeExtension = node.extension || '';
+
+                nodeDiv.appendChild(contentDiv);
+
+                if (node.type === 'directory') {
+                    const childContainer = document.createElement('div');
+                    childContainer.className = 'tree-node-children';
+                    nodeDiv.appendChild(childContainer);
+
+                    contentDiv.onclick = (e) => {
+                        e.stopPropagation();
+                        const isOpen = nodeDiv.classList.toggle('open');
+                        console.log('📂 Directory clicked:', name, 'open:', isOpen);
+                    };
+
+                    if (node.children) {
+                        Object.keys(node.children).forEach(childName => {
+                            renderNode(node.children[childName], childName, childContainer, path + '/' + name);
+                        });
+                    }
+                } else {
+                    contentDiv.onclick = (e) => {
+                        e.stopPropagation();
+                        console.log('📄 File clicked:', name, node.url);
+                        if (e.ctrlKey || e.metaKey) {
+                            this.showPreview(node);
+                        } else {
+                            window.open(node.url, '_blank');
+                        }
+                    };
+                }
+
+                // Attach hover handlers for preview
+                this.attachHoverHandlers(contentDiv, node, name);
+
+                parent.appendChild(nodeDiv);
+            };
+
+            console.log('🌲 Starting tree render with root nodes...');
+            Object.keys(tree).forEach(name => {
+                renderNode(tree[name], name, treeContainer);
+            });
+            console.log('✅ Tree rendering complete');
+        }
+
+        async renderRootMapView(container) {
+            const tree = this.storage.loadTree();
+            const allItems = [...(this.engine.siteData.front || []), ...(this.engine.siteData.back || [])];
+
+            container.innerHTML = `
+                <div class="tree-view">
+                    <h3 style="color: var(--sdp-accent-blue); margin-bottom: 16px;">Site Structure Map</h3>
+                    <div id="root-map-container"></div>
+                </div>
+            `;
+
+            const mapContainer = container.querySelector('#root-map-container');
+
+            if (allItems.length === 0) {
+                mapContainer.innerHTML = '<div class="loading">No data available. Run discovery first.</div>';
+                return;
+            }
+
+            // Create a visual map of the site structure
+            const urlMap = {};
+            allItems.forEach(item => {
+                if (item.url) {
+                    try {
+                        const url = new URL(item.url);
+                        if (url.hostname === location.hostname) {
+                            const path = url.pathname;
+                            if (!urlMap[path]) {
+                                urlMap[path] = [];
+                            }
+                            urlMap[path].push(item);
+                        }
+                    } catch (e) {
+                        // Invalid URL
+                    }
+                }
+            });
+
+            let html = '<div style="font-family: monospace; line-height: 1.6;">';
+            Object.keys(urlMap).sort().forEach(path => {
+                const items = urlMap[path];
+                const displayPath = path === '/' ? '/' : path;
+                html += `<div style="margin: 8px 0; padding: 8px; background: var(--sdp-bg-tertiary); border-radius: 4px;">
+                    <strong style="color: var(--sdp-accent-blue);">${Utils.escapeHtml(displayPath)}</strong>
+                    <div style="margin-left: 20px; margin-top: 4px;">`;
+                items.forEach(item => {
+                    const typeColor = item.type === 'page' ? 'var(--sdp-accent-green)' :
+                                    item.type === 'api' ? 'var(--sdp-accent-blue)' :
+                                    item.type === 'fetch' ? 'var(--sdp-accent-purple)' :
+                                    'var(--sdp-text-secondary)';
+                    html += `<span style="color: ${typeColor}; margin-right: 12px;">${item.type}</span>`;
+                });
+                html += '</div></div>';
+            });
+            html += '</div>';
+
+            mapContainer.innerHTML = html;
+        }
+
+        async renderStatsView(container) {
+            const meta = this.storage.loadMeta();
+            const stats = meta.statistics || {};
+
+            container.innerHTML = `
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3>Total Elements</h3>
+                        <div class="value">${stats.totalElements || 0}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Total URLs</h3>
+                        <div class="value">${stats.totalUrls || 0}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Shadow Roots</h3>
+                        <div class="value">${stats.shadowRoots || 0}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Unique Globals</h3>
+                        <div class="value">${stats.uniqueGlobals || 0}</div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Last Updated</h3>
+                        <div class="value" style="font-size: 14px;">
+                            ${stats.timestamp ? new Date(stats.timestamp).toLocaleString() : 'Never'}
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <h3>Discovery Status</h3>
+                        <div class="value" style="font-size: 14px; color: var(--sdp-accent-green);">
+                            ${this.engine.processing ? 'Running' : 'Complete'}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async renderUniqueVarsView(container) {
+            const meta = this.storage.loadMeta();
+            const globals = meta.uniqueGlobals || {};
+
+            const entries = Object.entries(globals);
+
+            container.innerHTML = `
+                <div class="tree-view">
+                    <h3 style="color: var(--sdp-accent-blue); margin-bottom: 16px;">Unique Global Variables (${entries.length})</h3>
+                    ${entries.length > 0 ?
+                        entries.map(([name, info]) => `
+                            <div class="tree-node" style="margin: 12px 0; padding: 8px; background: var(--sdp-bg-secondary); border-radius: 6px;">
+                                <div style="font-weight: 600; color: var(--sdp-accent-purple); margin-bottom: 4px;">${Utils.escapeHtml(name)}</div>
+                                <div style="font-size: 12px; color: var(--sdp-text-secondary);">
+                                    <div><strong>Type:</strong> ${info.type}</div>
+                                    ${info.constructor ? '<div><strong>Constructor:</strong> ' + Utils.escapeHtml(info.constructor) + '</div>' : ''}
+                                    ${info.sample ? '<div><strong>Sample:</strong> ' + Utils.escapeHtml(JSON.stringify(info.sample).substring(0, 100)) + (JSON.stringify(info.sample).length > 100 ? '...' : '') + '</div>' : ''}
+                                </div>
+                            </div>
+                        `).join('') :
+                        '<div class="loading">No unique globals found</div>'
+                    }
+                </div>
+            `;
+        }
+
+        attachHoverHandlers(element, nodeData, name) {
+            let hoverTimer = null;
+
+            element.addEventListener('mouseenter', (e) => {
+                this.clearHoverTimer();
+                hoverTimer = setTimeout(() => {
+                    this.showPreview(element, nodeData, name, e);
+                }, CONFIG.HOVER_DELAY_MS);
+                this.hoverTimer = hoverTimer;
+            });
+
+            element.addEventListener('mouseleave', () => {
+                this.clearHoverTimer();
+                setTimeout(() => this.hidePreview(), 300);
+            });
+        }
+
+        clearHoverTimer() {
+            if (this.hoverTimer) {
+                clearTimeout(this.hoverTimer);
+                this.hoverTimer = null;
+            }
+        }
+
+        async showPreview(element, nodeData, name, event) {
+            try {
+                this.hidePreview();
+
+                const tooltip = document.createElement('div');
+                tooltip.className = 'preview-tooltip';
+
+                const rect = element.getBoundingClientRect();
+                const rootRect = this.root.getBoundingClientRect();
+
+                tooltip.style.position = 'absolute';
+                tooltip.style.left = `${rect.right - rootRect.left + 10}px`;
+                tooltip.style.top = `${rect.top - rootRect.top}px`;
+
+                tooltip.innerHTML = `
+                    <div style="font-weight: 600; margin-bottom: 8px; color: var(--sdp-accent-blue);">
+                        ${nodeData.type === 'directory' ? '📁' : '📄'} ${name}
+                    </div>
+                    <div style="color: var(--sdp-text-secondary);">
+                        <div><strong>Type:</strong> ${nodeData.type}</div>
+                        ${nodeData.url ? '<div><strong>URL:</strong> <a href="' + nodeData.url + '" target="_blank" style="color: var(--sdp-accent-blue);">' + nodeData.url + '</a></div>' : ''}
+                        ${nodeData.extension ? '<div><strong>Extension:</strong> ' + nodeData.extension + '</div>' : ''}
+                    </div>
+                `;
+
+                this.root.querySelector('.content').appendChild(tooltip);
+                this.currentPreview = tooltip;
+
+                tooltip.addEventListener('mouseenter', () => this.clearHoverTimer());
+                tooltip.addEventListener('mouseleave', () => this.hidePreview());
+
+                this.adjustTooltipPosition(tooltip);
+                setTimeout(() => tooltip.classList.add('visible'), 10);
+
+            } catch (error) {
+                console.error('Failed to show preview:', error);
+                this.hidePreview();
+            }
+        }
+
+        adjustTooltipPosition(tooltip) {
+            const rect = tooltip.getBoundingClientRect();
+            const rootRect = this.root.getBoundingClientRect();
+
+            if (rect.right > window.innerWidth) {
+                const currentLeft = parseInt(tooltip.style.left);
+                tooltip.style.left = `${currentLeft - rect.width - 20}px`;
+            }
+
+            if (rect.bottom > window.innerHeight) {
+                const currentTop = parseInt(tooltip.style.top);
+                tooltip.style.top = `${Math.max(10, currentTop - rect.height)}px`;
+            }
+        }
+
+        hidePreview() {
+            if (this.currentPreview) {
+                this.currentPreview.remove();
+                this.currentPreview = null;
+            }
+        }
+
+        async refreshDiscovery() {
+            console.log('🔄 Manual refresh requested...');
+            try {
+                console.log('Forcing fresh discovery...');
+                await this.engine.startDiscovery();
+                console.log('Discovery completed, re-rendering view...');
+                await this.renderView();
+                console.log('✅ Refresh complete!');
+            } catch (error) {
+                console.error('❌ Refresh failed:', error);
+                console.error('Error stack:', error.stack);
+            }
+        }
+
+        async exportData() {
+            try {
+                const data = {
+                    siteData: this.engine.siteData,
+                    tree: this.storage.loadTree(),
+                    meta: this.storage.loadMeta(),
+                    timestamp: new Date().toISOString(),
+                    domain: location.hostname,
+                    version: CONFIG.TOOL_NAME
+                };
+
+                const blob = new Blob([Utils.safeJSONStringify(data, null, 2)], {
+                    type: 'application/json'
+                });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `site_discovery_${location.hostname}_${Date.now()}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+
+                console.log('Data exported successfully');
+            } catch (error) {
+                console.error('Export failed:', error);
+                alert('Export failed: ' + error.message);
+            }
+        }
+
+        async clearData() {
+            if (confirm('Clear all discovery data for this domain? This action cannot be undone.')) {
+                try {
+                    this.storage.clear();
+                    this.engine.siteData = { front: [], back: [] };
+                    await this.renderView();
+                    console.log('Data cleared successfully');
+                } catch (error) {
+                    console.error('Clear failed:', error);
+                }
+            }
+        }
+    }
+
+    // Network monitor
+    function monitorNetwork() {
+        try {
+            const origOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function (method, url) {
+                this.addEventListener('load', function () {
+                    if (this.status === 200) {
+                        const entry = {
+                            id: url,
+                            type: 'api',
+                            method,
+                            url,
+                            status: this.status,
+                            responseSnippet: this.responseText.slice(0, 200),
+                            timestamp: Date.now()
+                        };
+                        engine.dedupeAdd(engine.siteData.back, entry);
+                    }
+                });
+                return origOpen.apply(this, arguments);
+            };
+            const origFetch = window.fetch;
+            window.fetch = function (resource, init = {}) {
+                return origFetch.apply(this, arguments).then(resp => {
+                    const clone = resp.clone();
+                    clone.text().then(txt => {
+                        if (resp.ok) {
+                            const entry = {
+                                id: resource.toString(),
+                                type: 'fetch',
+                                method: init.method || 'GET',
+                                url: resource.toString(),
+                                status: resp.status,
+                                responseSnippet: txt.slice(0, 200),
+                                timestamp: Date.now()
+                            };
+                            engine.dedupeAdd(engine.siteData.back, entry);
+                        }
+                    }).catch(() => { });
+                    return resp;
+                });
+            };
+        } catch (e) {
+            console.error('[SiteDiscovery] monitorNetwork error', e);
+        }
+    }
+
+    // Register the core hooks (they will run immediately and be listed in the registry)
+    // Note: Hooks are now integrated into the DiscoveryEngine class methods
+
+    // Get initial site data from storage (will be set during initialization)
+    let siteData = { front: [], back: [] };
+    // Ensure basic structure
+    siteData.front = siteData.front || [];
+    siteData.back = siteData.back || [];
+
+    // Initialize lastDataLength for glow effect tracking
+    lastDataLength = (siteData.front ? siteData.front.length : 0) +
+                    (siteData.back ? siteData.back.length : 0);
+
+    // Capture current URL as a front-end page entry (will be done during initialization)
+    // const pageEntry = {
+    //     id: location.href,
+    //     type: 'page',
+    //     url: location.href,
+    //     title: document.title,
+    //     timestamp: Date.now()
+    // };
+    // engine.dedupeAdd(engine.siteData.front, pageEntry);
+
+    // Save after collection (will be done during initialization)
+    // engine.storage.saveData(engine.siteData);
+
+    // ---------- Professional UI Initialization ----------
+    function initialize() {
+        console.log('%c🚀 Starting Site Discovery Pro v5.0 initialization...', 'color: #ffa657; font-weight: bold;');
+
+        // Check if already initialized
+        if (document.getElementById(CONFIG.UI_ROOT_ID)) {
+            console.log('UI already exists, skipping initialization');
+            return;
+        }
+
+        console.log('Initializing storage and engine...');
+
+        try {
+            // Initialize storage and engine
+            const domain = window.location.hostname;
+            console.log('Domain:', domain);
+
+            const storage = new ChunkedStorage(domain);
+            console.log('Storage created:', storage);
+
+            engine = new DiscoveryEngine(storage);
+            console.log('Engine created:', engine);
+
+            const ui = new ProfessionalUI(engine, storage);
+            console.log('UI created:', ui);
+
+            // Inject styles and create UI
+            console.log('Injecting styles...');
+            ui.injectStyles();
+
+            console.log('Creating UI...');
+            ui.createUI();
+
+            // Attach event listeners
+            console.log('Attaching event listeners...');
+            ui.attachEventListeners();
+
+            // Check if UI should start minimized
+            const isMinimized = GM_getValue(MINIMIZED_STATE_KEY, false);
+            console.log('Minimized state:', isMinimized);
+
+            if (isMinimized) {
+                console.log('Starting minimized...');
+                ui.createMinimizedIcon();
+            } else {
+                console.log('Loading cached tree...');
+                ui.loadCachedTree();
+            }
+
+            // Auto-start discovery after a short delay
+            console.log('Setting up auto-discovery...');
+            setTimeout(async () => {
+                console.log('🚀 Starting auto-discovery...');
+                try {
+                    console.log('Calling engine.startDiscovery()...');
+                    await engine.startDiscovery();
+                    console.log('Discovery completed, rendering view...');
+                    if (!isMinimized) {
+                        await ui.renderView();
+                    }
+                    console.log('Auto-discovery complete!');
+                } catch (error) {
+                    console.error('❌ Auto-discovery failed:', error);
+                    console.error('Error stack:', error.stack);
+                }
+            }, 1000);
+
+            // Register menu commands
+            console.log('Registering menu commands...');
+            GM_registerMenuCommand('Toggle Site Discovery UI', function() {
+                const existing = document.getElementById(CONFIG.UI_ROOT_ID);
+                if (existing) existing.remove(); else initialize();
+            });
+
+            GM_registerMenuCommand('Toggle Debug Mode', function() {
+                const current = GM_getValue(DEBUG_MODE_KEY, false);
+                GM_setValue(DEBUG_MODE_KEY, !current);
+                alert('Debug mode ' + (current ? 'disabled' : 'enabled') + '. Reload the page to apply changes.');
+            });
+
+            GM_registerMenuCommand('Analyze Heap Snapshot', function() {
+                console.log('Manual heap snapshot requested...');
+                if (engine) {
+                    engine.analyzeHeapSnapshot();
+                    alert('Heap snapshot analysis complete!');
+                } else {
+                    alert('Engine not initialized!');
+                }
+            });
+
+            GM_registerMenuCommand('Debug: Show Current Data', function() {
+                console.log('🔍 Debug: Current state requested...');
+                if (engine) {
+                    console.log('📊 Engine siteData:', engine.siteData);
+                    console.log('📊 Storage tree:', engine.storage.loadTree());
+                    console.log('📊 Storage meta:', engine.storage.loadMeta());
+                    console.log('📊 Engine lastDataLength:', engine.lastDataLength);
+                    console.log('📊 Engine processing:', engine.processing);
+
+                    const stats = {
+                        frontItems: engine.siteData.front ? engine.siteData.front.length : 0,
+                        backItems: engine.siteData.back ? engine.siteData.back.length : 0,
+                        treeKeys: Object.keys(engine.storage.loadTree()).length,
+                        isExpired: engine.storage.isExpired()
+                    };
+                    console.log('📈 Stats:', stats);
+
+                    alert(`Data Status:\nFront: ${stats.frontItems}\nBack: ${stats.backItems}\nTree Keys: ${stats.treeKeys}\nExpired: ${stats.isExpired}\n\nCheck console for full data.`);
+                } else {
+                    alert('Engine not initialized!');
+                    console.error('❌ Engine is null!');
+                }
+            });
+
+            // Track memory usage periodically if in debug mode
+            if (engine.isDebugMode()) {
+                setInterval(() => engine.trackMemory(), 1000);
+            }
+
+            console.log('%c✅ Site Discovery Pro v5.0 Ready!', 'color: #7ee787; font-weight: bold; font-size: 14px;');
+
+        } catch (error) {
+            console.error('❌ Initialization failed:', error);
+            console.error('Error stack:', error.stack);
+        }
+    }
+
+    // Initialize when ready - Wait for DOM to be available for UI creation
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initialize);
+    } else {
+        // DOM already loaded, but wait a bit for the page to settle
+        setTimeout(initialize, 500);
+    }
+})();

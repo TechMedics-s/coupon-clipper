@@ -1,0 +1,1500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TechMedics Advanced Red Team Suite</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #252526;
+            border-radius: 8px;
+            border: 1px solid #3e3e42;
+        }
+        .test-controls {
+            background: #252526;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #3e3e42;
+        }
+        .test-button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .test-button:hover {
+            background: #005a9e;
+        }
+        .test-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        .test-results {
+            background: #1a1a1a;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #3e3e42;
+            font-family: 'Consolas', 'Monaco', monospace;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border-left: 4px solid;
+        }
+        .status.pass { 
+            background: #2d5a2d; 
+            border-left-color: #4caf50;
+        }
+        .status.fail { 
+            background: #5a2d2d; 
+            border-left-color: #f44336;
+        }
+        .status.skip { 
+            background: #5a5a2d; 
+            border-left-color: #ff9800;
+        }
+        .status.error { 
+            background: #5a2d3d; 
+            border-left-color: #9c27b0;
+        }
+        .loading {
+            color: #007acc;
+            font-style: italic;
+        }
+        .debug-info {
+            background: #2d2d30;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 10px 0;
+            border: 1px solid #3e3e42;
+            font-size: 12px;
+        }
+        .section-title {
+            color: #007acc;
+            border-bottom: 2px solid #007acc;
+            padding-bottom: 5px;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧪 TechMedics Userscript Test Runner</h1>
+            <p>Live Server Integration for VS Code Debugging</p>
+            <div id="status" class="loading">Loading userscript...</div>
+        </div>
+        
+        <div class="test-controls">
+            <h3 class="section-title">Test Controls</h3>
+            <div>
+                <button class="test-button" onclick="runAllTests()" id="runAllBtn">Run All Tests</button>
+                <button class="test-button" onclick="runIndividualTest('override')">Test Override</button>
+                <button class="test-button" onclick="runIndividualTest('firebase')">Test Firebase</button>
+                <button class="test-button" onclick="runIndividualTest('state')">Test State</button>
+                <button class="test-button" onclick="runIndividualTest('api')">Test API</button>
+                <button class="test-button" onclick="runIndividualTest('race')">Test Race</button>
+                <button class="test-button" onclick="runIndividualTest('localStorage')">Test LocalStorage</button>
+                <button class="test-button" onclick="runIndividualTest('serviceWorker')">Test ServiceWorker</button>
+                <button class="test-button" onclick="runIndividualTest('dom')">Test DOM</button>
+                <button class="test-button" onclick="clearResults()">Clear Results</button>
+            </div>
+        </div>
+        
+        <div class="debug-info">
+            <h4 class="section-title">Debug Information</h4>
+            <div id="debug-info">Checking environment...</div>
+        </div>
+        
+        <div class="test-results" id="test-results">
+            Test results will appear here...
+        </div>
+    </div>
+
+    <!-- GM_* Function Polyfills (must load before userscript) -->
+    <script>
+        // Polyfill Tampermonkey GM_* functions for browser testing
+        window.GM_setValue = function(key, value) {
+            try {
+                localStorage.setItem('gm_' + key, JSON.stringify(value));
+                console.log('GM_setValue:', key, value);
+            } catch(e) {
+                console.error('GM_setValue failed:', e);
+            }
+        };
+        
+        window.GM_getValue = function(key, defaultValue) {
+            try {
+                const value = localStorage.getItem('gm_' + key);
+                const parsed = value ? JSON.parse(value) : null;
+                console.log('GM_getValue:', key, parsed || defaultValue);
+                return parsed !== null ? parsed : defaultValue;
+            } catch(e) {
+                console.error('GM_getValue failed:', e);
+                return defaultValue;
+            }
+        };
+        
+        window.GM_deleteValue = function(key) {
+            try {
+                localStorage.removeItem('gm_' + key);
+                console.log('GM_deleteValue:', key);
+            } catch(e) {
+                console.error('GM_deleteValue failed:', e);
+            }
+        };
+
+        window.GM_addStyle = function(css) {
+            try {
+                const style = document.createElement('style');
+                style.textContent = css;
+                document.head.appendChild(style);
+                console.log('GM_addStyle: CSS injected');
+            } catch(e) {
+                console.error('GM_addStyle failed:', e);
+            }
+        };
+
+        window.GM_notification = function(options) {
+            const message = typeof options === 'string' ? options : options.text;
+            console.log('GM_notification:', message);
+            
+            // Create a simple notification div
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: #333;
+                color: white;
+                padding: 10px 15px;
+                border-radius: 5px;
+                z-index: 10000;
+                font-family: Arial, sans-serif;
+            `;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.parentNode.removeChild(notification);
+                }
+            }, 3000);
+        };
+
+        window.GM_xmlhttpRequest = function(options) {
+            console.log('GM_xmlhttpRequest:', options);
+            
+            try {
+                fetch(options.url, {
+                    method: options.method || 'GET',
+                    headers: options.headers || {},
+                    body: options.data
+                })
+                .then(response => response.text())
+                .then(responseText => {
+                    if (options.onload) {
+                        options.onload({
+                            responseText,
+                            status: 200,
+                            readyState: 4
+                        });
+                    }
+                })
+                .catch(error => {
+                    if (options.onerror) {
+                        options.onerror(error);
+                    }
+                });
+            } catch(e) {
+                console.error('GM_xmlhttpRequest failed:', e);
+                if (options.onerror) {
+                    options.onerror(e);
+                }
+            }
+        };
+
+        console.log('🔧 GM_* function polyfills loaded');
+        
+        // Disable AI features completely to prevent initialization errors
+        window.CONFIG = window.CONFIG || {};
+        window.CONFIG.ai = { enabled: false };
+        
+        // Make CONFIG immutable to prevent userscript from overwriting it
+        Object.defineProperty(window, 'CONFIG', {
+            value: window.CONFIG,
+            writable: false,
+            configurable: false
+        });
+        console.log('🚫 AI features disabled and CONFIG locked');
+        
+        // Suppress AI-related error messages for cleaner testing
+        const originalLog = console.log;
+        const originalError = console.error;
+        
+        console.log = function(...args) {
+            const message = args.join(' ');
+            // Filter out AI-related noise
+            if (message.includes('AI initialization failed') || 
+                message.includes('Starting AI-driven method selection') ||
+                message.includes('Method override failed') ||
+                message.includes('Initialization failed')) {
+                return; // Suppress these messages
+            }
+            return originalLog.apply(console, args);
+        };
+        
+        console.error = function(...args) {
+            const message = args.join(' ');
+            // Filter out AI-related errors
+            if (message.includes('Cannot read properties of undefined (reading \'get\')')) {
+                return; // Suppress these errors
+            }
+            return originalError.apply(console, args);
+        };
+        
+        console.log('🔇 AI error suppression enabled');
+        
+        // Polyfill AI engine components to prevent initialization errors
+        window.AIDecisionEngine = function() {
+            this.knowledgeBase = new Map();
+            this.provider = 'test';
+            this.apiKey = 'test-key';
+            this.model = 'test-model';
+            this.maxTokens = 1000;
+            this.temperature = 0.5;
+            this.topP = 0.9;
+            this.systemPrompt = 'Test mode';
+            this.reasoningEffort = 'medium';
+            
+            this.callAI = async function(prompt) {
+                return 'Test mode: AI response simulated';
+            };
+            
+            this.analyzeResults = async function(bypassEngine) {
+                return {
+                    timestamp: Date.now(),
+                    activeMethod: 'test',
+                    recommendations: ['Test recommendation']
+                };
+            };
+            
+            this.learnFromResult = function(method, success, error) {
+                console.log('AI learning:', method, success, error);
+            };
+            
+            this.getBestMethod = function() {
+                return 'override';
+            };
+        };
+        
+        console.log('🤖 AI engine polyfills loaded');
+        
+        // ========================================
+        // ADVANCED RED TEAM SUITE - CORE ARCHITECTURE
+        // ========================================
+        
+        // Core Plugin System with Event Bus
+        class RedTeamToolbox {
+            constructor() {
+                this.plugins = new Map();
+                this.eventBus = new EventTarget();
+                this.persistence = new PersistenceManager();
+                this.discovery = new DiscoveryEngine(this.eventBus);
+                this.visualizer = new TreeMapVisualizer();
+                this.isInitialized = false;
+            }
+            
+            // Plugin registration system
+            registerPlugin(plugin) {
+                if (!plugin.name || !plugin.init) {
+                    throw new Error('Plugin must have name and init method');
+                }
+                
+                this.plugins.set(plugin.name, plugin);
+                console.log(`🔌 Registered plugin: ${plugin.name}`);
+                
+                // Initialize plugin if suite is already running
+                if (this.isInitialized) {
+                    try {
+                        plugin.init(this);
+                    } catch (error) {
+                        console.error(`❌ Failed to initialize plugin ${plugin.name}:`, error);
+                    }
+                }
+            }
+            
+            // Initialize the entire suite
+            async initialize() {
+                if (this.isInitialized) return;
+                
+                console.log('🚀 Initializing Advanced Red Team Suite...');
+                
+                // Initialize core systems
+                await this.persistence.initialize();
+                await this.discovery.initialize();
+                await this.visualizer.initialize();
+                
+                // Initialize all plugins
+                for (const [name, plugin] of this.plugins) {
+                    try {
+                        await plugin.init(this);
+                        console.log(`✅ Initialized plugin: ${name}`);
+                    } catch (error) {
+                        console.error(`❌ Plugin ${name} failed:`, error);
+                    }
+                }
+                
+                this.isInitialized = true;
+                this.createMainInterface();
+                
+                console.log('🎯 Red Team Suite ready!');
+            }
+            
+            // Create the main GUI interface
+            createMainInterface() {
+                // Wait for DOM to be ready
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', () => {
+                        this.createActivationButton();
+                    });
+                } else {
+                    this.createActivationButton();
+                }
+            }
+            
+            createActivationButton() {
+                // Create floating activation button
+                const activateBtn = document.createElement('div');
+                activateBtn.id = 'redteam-activate-btn';
+                activateBtn.innerHTML = '🎯';
+                activateBtn.style.cssText = `
+                    position: fixed;
+                    top: 20px;
+                    right: 20px;
+                    width: 50px;
+                    height: 50px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    border-radius: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 24px;
+                    cursor: pointer;
+                    z-index: 10000;
+                    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+                    transition: all 0.3s ease;
+                `;
+                
+                activateBtn.addEventListener('click', () => {
+                    this.visualizer.togglePanel();
+                });
+                
+                document.body.appendChild(activateBtn);
+                console.log('🎯 Activation button created');
+            }
+        }
+        
+        // Smart Persistence Manager with LRU Cache
+        class PersistenceManager {
+            constructor() {
+                this.cache = new Map();
+                this.maxSize = 5 * 1024 * 1024; // 5MB limit
+                this.maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+                this.contentHashes = new Set(); // For deduplication
+            }
+            
+            async initialize() {
+                // Load existing data with size check
+                const stored = GM_getValue('redteam_data', '{}');
+                const data = typeof stored === 'string' ? JSON.parse(stored) : stored;
+                const dataSize = JSON.stringify(data).length;
+                
+                if (dataSize > this.maxSize * 0.8) {
+                    console.warn('⚠️ Data size approaching limit, pruning old entries');
+                    await this.pruneOldData();
+                }
+                
+                this.cache = new Map(Object.entries(data));
+                console.log(`💾 Loaded ${this.cache.size} domain entries`);
+            }
+            
+            // Smart data storage with deduplication
+            store(domain, path, data) {
+                const contentHash = this.hashContent(data);
+                
+                // Skip if already exists
+                if (this.contentHashes.has(contentHash)) {
+                    return false;
+                }
+                
+                if (!this.cache.has(domain)) {
+                    this.cache.set(domain, { pages: {}, lastUpdated: Date.now() });
+                }
+                
+                const domainData = this.cache.get(domain);
+                domainData.pages[path] = {
+                    ...data,
+                    hash: contentHash,
+                    timestamp: Date.now()
+                };
+                
+                domainData.lastUpdated = Date.now();
+                this.contentHashes.add(contentHash);
+                
+                // Check size limit
+                if (this.getCurrentSize() > this.maxSize) {
+                    this.evictLRU();
+                }
+                
+                GM_setValue('redteam_data', Object.fromEntries(this.cache));
+                return true;
+            }
+            
+            // Content hashing for deduplication
+            hashContent(content) {
+                const str = JSON.stringify(content);
+                let hash = 0;
+                for (let i = 0; i < str.length; i++) {
+                    const char = str.charCodeAt(i);
+                    hash = ((hash << 5) - hash) + char;
+                    hash = hash & hash; // Convert to 32-bit integer
+                }
+                return hash.toString(36);
+            }
+            
+            getCurrentSize() {
+                return JSON.stringify(Object.fromEntries(this.cache)).length;
+            }
+            
+            pruneOldData() {
+                const cutoff = Date.now() - this.maxAge;
+                for (const [domain, data] of this.cache) {
+                    if (data.lastUpdated < cutoff) {
+                        this.cache.delete(domain);
+                    }
+                }
+            }
+            
+            evictLRU() {
+                // Sort by last updated and remove oldest 10%
+                const sorted = Array.from(this.cache.entries())
+                    .sort((a, b) => a[1].lastUpdated - b[1].lastUpdated);
+                
+                const toRemove = Math.floor(sorted.length * 0.1);
+                for (let i = 0; i < toRemove; i++) {
+                    this.cache.delete(sorted[i][0]);
+                }
+            }
+        }
+        
+        // Discovery Engine with Smart Object Hooking
+        class DiscoveryEngine {
+            constructor(eventBus) {
+                this.eventBus = eventBus;
+                this.isActive = false;
+                this.observers = [];
+                this.hookedObjects = new WeakMap();
+            }
+            
+            async initialize() {
+                console.log('🔍 Discovery Engine ready');
+            }
+            
+            start() {
+                if (this.isActive) return;
+                
+                this.isActive = true;
+                this.setupDOMObserver();
+                this.setupNetworkHooking();
+                this.setupObjectHooking();
+                
+                console.log('🔍 Discovery started');
+            }
+            
+            stop() {
+                this.isActive = false;
+                this.observers.forEach(obs => obs.disconnect());
+                console.log('⏹️ Discovery stopped');
+            }
+            
+            setupDOMObserver() {
+                const observer = new MutationObserver((mutations) => {
+                    if (!this.isActive) return;
+                    
+                    const discoveries = [];
+                    mutations.forEach(mutation => {
+                        mutation.addedNodes.forEach(node => {
+                            if (node.nodeType === Node.ELEMENT_NODE) {
+                                const discovery = this.analyzeElement(node);
+                                if (discovery) discoveries.push(discovery);
+                            }
+                        });
+                    });
+                    
+                    if (discoveries.length > 0) {
+                        this.eventBus.dispatchEvent(new CustomEvent('discovery', {
+                            detail: { type: 'dom', data: discoveries }
+                        }));
+                    }
+                });
+                
+                observer.observe(document.body, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true
+                });
+                
+                this.observers.push(observer);
+            }
+            
+            setupNetworkHooking() {
+                // Hook fetch API
+                const originalFetch = window.fetch;
+                window.fetch = function(...args) {
+                    const url = args[0];
+                    const discovery = {
+                        type: 'api_call',
+                        url: url,
+                        method: args[1]?.method || 'GET',
+                        timestamp: Date.now()
+                    };
+                    
+                    // Emit event for network discovery
+                    window.redTeamSuite?.eventBus.dispatchEvent(new CustomEvent('discovery', {
+                        detail: { type: 'network', data: discovery }
+                    }));
+                    
+                    return originalFetch.apply(this, args);
+                };
+            }
+            
+            setupObjectHooking() {
+                // Hook key global objects
+                const objectsToHook = ['window', 'document', 'navigator'];
+                objectsToHook.forEach(objName => {
+                    if (window[objName]) {
+                        this.hookObject(window[objName], objName);
+                    }
+                });
+            }
+            
+            hookObject(obj, name) {
+                if (this.hookedObjects.has(obj)) return;
+                
+                // Store original properties
+                const originalProps = {};
+                for (const prop in obj) {
+                    try {
+                        originalProps[prop] = obj[prop];
+                    } catch (e) {
+                        // Skip inaccessible properties
+                    }
+                }
+                
+                this.hookedObjects.set(obj, originalProps);
+                
+                // Emit discovery event
+                this.eventBus.dispatchEvent(new CustomEvent('discovery', {
+                    detail: {
+                        type: 'object',
+                        data: {
+                            name: name,
+                            propertyCount: Object.keys(originalProps).length,
+                            timestamp: Date.now()
+                        }
+                    }
+                }));
+            }
+            
+            analyzeElement(element) {
+                const discovery = {
+                    tagName: element.tagName,
+                    id: element.id,
+                    classes: Array.from(element.classList),
+                    attributes: {},
+                    children: element.children.length,
+                    timestamp: Date.now()
+                };
+                
+                // Extract important attributes
+                ['href', 'src', 'action', 'method', 'type', 'name'].forEach(attr => {
+                    if (element[attr]) discovery.attributes[attr] = element[attr];
+                });
+                
+                // Only return if element has interesting attributes
+                if (Object.keys(discovery.attributes).length > 0 || 
+                    discovery.id || 
+                    discovery.classes.length > 0) {
+                    return discovery;
+                }
+                
+                return null;
+            }
+        }
+        
+        // Tree Map Visualizer with Virtual Scrolling
+        class TreeMapVisualizer {
+            constructor() {
+                this.isVisible = false;
+                this.panel = null;
+                this.treeContainer = null;
+                this.virtualScroll = new VirtualScrollManager();
+            }
+            
+            async initialize() {
+                this.createPanel();
+                console.log('🌳 Tree Map Visualizer ready');
+            }
+            
+            createPanel() {
+                // Create main panel
+                this.panel = document.createElement('div');
+                this.panel.id = 'redteam-panel';
+                this.panel.style.cssText = `
+                    position: fixed;
+                    top: 80px;
+                    right: 20px;
+                    width: 400px;
+                    height: 600px;
+                    background: #252526;
+                    border: 1px solid #3e3e42;
+                    border-radius: 8px;
+                    display: none;
+                    flex-direction: column;
+                    z-index: 9999;
+                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+                    font-family: 'Segoe UI', sans-serif;
+                `;
+                
+                // Panel header
+                const header = document.createElement('div');
+                header.style.cssText = `
+                    padding: 15px;
+                    background: #1e1e1e;
+                    border-bottom: 1px solid #3e3e42;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    cursor: move;
+                `;
+                header.innerHTML = `
+                    <span style="color: #007acc; font-weight: bold;">🎯 Red Team Suite</span>
+                    <div>
+                        <button id="minimize-btn" style="background: none; border: none; color: #d4d4d4; cursor: pointer; margin-right: 10px;">➖</button>
+                        <button id="close-btn" style="background: none; border: none; color: #d4d4d4; cursor: pointer;">❌</button>
+                    </div>
+                `;
+                
+                // Tree container
+                this.treeContainer = document.createElement('div');
+                this.treeContainer.className = 'tree-container';
+                this.treeContainer.style.cssText = `
+                    flex: 1;
+                    overflow-y: auto;
+                    padding: 15px;
+                    color: #d4d4d4;
+                `;
+                
+                this.panel.appendChild(header);
+                this.panel.appendChild(this.treeContainer);
+                document.body.appendChild(this.panel);
+                
+                // Setup panel interactions
+                this.setupPanelInteractions();
+            }
+            
+            setupPanelInteractions() {
+                // Minimize button
+                document.getElementById('minimize-btn').addEventListener('click', () => {
+                    this.minimize();
+                });
+                
+                // Close button
+                document.getElementById('close-btn').addEventListener('click', () => {
+                    this.hide();
+                });
+                
+                // Make panel draggable
+                this.makeDraggable(this.panel);
+                
+                // Make panel resizable
+                this.makeResizable(this.panel);
+            }
+            
+            togglePanel() {
+                if (this.isVisible) {
+                    this.hide();
+                } else {
+                    this.show();
+                }
+            }
+            
+            show() {
+                this.panel.style.display = 'flex';
+                this.isVisible = true;
+                this.loadDomainData();
+            }
+            
+            hide() {
+                this.panel.style.display = 'none';
+                this.isVisible = false;
+            }
+            
+            minimize() {
+                if (this.panel.style.height === '40px') {
+                    this.panel.style.height = '600px';
+                    this.treeContainer.style.display = 'block';
+                } else {
+                    this.panel.style.height = '40px';
+                    this.treeContainer.style.display = 'none';
+                }
+            }
+            
+            loadDomainData() {
+                const stored = GM_getValue('redteam_data', '{}');
+                const data = typeof stored === 'string' ? JSON.parse(stored) : stored;
+                this.renderTree(data);
+            }
+            
+            renderTree(data) {
+                this.treeContainer.innerHTML = '';
+                
+                if (Object.keys(data).length === 0) {
+                    this.treeContainer.innerHTML = '<div style="color: #888;">No data collected yet. Start browsing to build your domain intelligence!</div>';
+                    return;
+                }
+                
+                // Create tree view with virtual scrolling
+                const treeHtml = this.createTreeView(data, 0);
+                this.treeContainer.innerHTML = treeHtml;
+                
+                // Add expand/collapse functionality
+                this.setupTreeInteractions();
+            }
+            
+            createTreeView(data, depth) {
+                let html = '';
+                const indent = '  '.repeat(depth);
+                
+                for (const [domain, domainData] of Object.entries(data)) {
+                    const pageCount = Object.keys(domainData.pages || {}).length;
+                    const lastUpdated = new Date(domainData.lastUpdated).toLocaleString();
+                    
+                    html += `
+                        <div class="tree-node" data-domain="${domain}" style="margin-left: ${depth * 20}px;">
+                            <div class="tree-header" style="padding: 8px; cursor: pointer; background: #2d2d30; border-radius: 4px; margin-bottom: 4px;">
+                                <span class="expand-icon">📁</span>
+                                <span style="color: #007acc; font-weight: bold;">${domain}</span>
+                                <span style="color: #888; font-size: 12px;">(${pageCount} pages)</span>
+                                <span style="color: #666; font-size: 10px; display: block;">Last: ${lastUpdated}</span>
+                            </div>
+                            <div class="tree-children" style="display: none;">
+                    `;
+                    
+                    // Render pages
+                    if (domainData.pages) {
+                        for (const [path, pageData] of Object.entries(domainData.pages)) {
+                            html += `
+                                <div class="tree-node" style="margin-left: 20px;">
+                                    <div class="tree-header" style="padding: 6px; cursor: pointer; background: #333; border-radius: 3px; margin-bottom: 2px;">
+                                        <span class="expand-icon">📄</span>
+                                        <span style="color: #4ec9b0;">${path}</span>
+                                        <span style="color: #888; font-size: 11px;">${pageData.timestamp ? new Date(pageData.timestamp).toLocaleTimeString() : ''}</span>
+                                    </div>
+                                </div>
+                            `;
+                        }
+                    }
+                    
+                    html += `
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                return html;
+            }
+            
+            setupTreeInteractions() {
+                document.querySelectorAll('.tree-header').forEach(header => {
+                    header.addEventListener('click', (e) => {
+                        const children = header.nextElementSibling;
+                        const icon = header.querySelector('.expand-icon');
+                        
+                        if (children && children.style.display === 'none') {
+                            children.style.display = 'block';
+                            icon.textContent = '📂';
+                        } else if (children) {
+                            children.style.display = 'none';
+                            icon.textContent = '📁';
+                        }
+                    });
+                });
+            }
+            
+            makeDraggable(element) {
+                let isDragging = false;
+                let currentX;
+                let currentY;
+                let initialX;
+                let initialY;
+                
+                const header = element.querySelector('div');
+                
+                header.addEventListener('mousedown', (e) => {
+                    if (e.target.tagName === 'BUTTON') return;
+                    
+                    isDragging = true;
+                    initialX = e.clientX - element.offsetLeft;
+                    initialY = e.clientY - element.offsetTop;
+                });
+                
+                document.addEventListener('mousemove', (e) => {
+                    if (!isDragging) return;
+                    
+                    e.preventDefault();
+                    currentX = e.clientX - initialX;
+                    currentY = e.clientY - initialY;
+                    
+                    element.style.left = currentX + 'px';
+                    element.style.top = currentY + 'px';
+                    element.style.right = 'auto';
+                });
+                
+                document.addEventListener('mouseup', () => {
+                    isDragging = false;
+                });
+            }
+            
+            makeResizable(element) {
+                const resizer = document.createElement('div');
+                resizer.style.cssText = `
+                    position: absolute;
+                    bottom: 0;
+                    right: 0;
+                    width: 20px;
+                    height: 20px;
+                    cursor: nwse-resize;
+                    background: linear-gradient(135deg, transparent 50%, #666 50%);
+                `;
+                
+                element.appendChild(resizer);
+                
+                let isResizing = false;
+                let initialWidth;
+                let initialHeight;
+                let initialX;
+                let initialY;
+                
+                resizer.addEventListener('mousedown', (e) => {
+                    isResizing = true;
+                    initialWidth = element.offsetWidth;
+                    initialHeight = element.offsetHeight;
+                    initialX = e.clientX;
+                    initialY = e.clientY;
+                });
+                
+                document.addEventListener('mousemove', (e) => {
+                    if (!isResizing) return;
+                    
+                    const width = initialWidth + (e.clientX - initialX);
+                    const height = initialHeight + (e.clientY - initialY);
+                    
+                    element.style.width = Math.max(300, width) + 'px';
+                    element.style.height = Math.max(200, height) + 'px';
+                });
+                
+                document.addEventListener('mouseup', () => {
+                    isResizing = false;
+                });
+            }
+        }
+        
+        // Virtual Scrolling Manager for Performance
+        class VirtualScrollManager {
+            constructor() {
+                this.visibleItems = [];
+                this.itemHeight = 30;
+                this.bufferSize = 10;
+            }
+            
+            render(items, container) {
+                // Simple virtual scrolling implementation
+                const visibleCount = Math.ceil(container.clientHeight / this.itemHeight) + this.bufferSize;
+                const startIndex = Math.max(0, Math.floor(container.scrollTop / this.itemHeight) - this.bufferSize);
+                const endIndex = Math.min(items.length, startIndex + visibleCount);
+                
+                container.innerHTML = '';
+                
+                for (let i = startIndex; i < endIndex; i++) {
+                    const item = items[i];
+                    const itemEl = document.createElement('div');
+                    itemEl.style.cssText = `
+                        height: ${this.itemHeight}px;
+                        padding: 5px;
+                        border-bottom: 1px solid #333;
+                    `;
+                    itemEl.textContent = item.text;
+                    container.appendChild(itemEl);
+                }
+            }
+        }
+        
+        // Initialize the Red Team Suite
+        window.RedTeamToolbox = RedTeamToolbox;
+        window.redTeamSuite = new RedTeamToolbox();
+        
+        // ========================================
+        // EXAMPLE PLUGINS & DISCOVERY INTEGRATION
+        // ========================================
+        
+        // Data Collection Plugin
+        const DataCollectorPlugin = {
+            name: 'DataCollector',
+            async init(suite) {
+                this.suite = suite;
+                
+                // Listen for discovery events
+                suite.eventBus.addEventListener('discovery', (event) => {
+                    this.handleDiscovery(event.detail);
+                });
+                
+                // Start discovery after initialization
+                setTimeout(() => {
+                    suite.discovery.start();
+                    console.log('📊 Data collection started');
+                }, 1000);
+            },
+            
+            handleDiscovery(discovery) {
+                const domain = window.location.hostname;
+                const path = window.location.pathname;
+                
+                // Store discovery data
+                const stored = this.suite.persistence.store(domain, path, {
+                    discoveries: discovery.data,
+                    type: discovery.type,
+                    url: window.location.href
+                });
+                
+                if (stored) {
+                    console.log(`💾 New ${discovery.type} data stored for ${domain}${path}`);
+                }
+            }
+        };
+        
+        // AI Chat Integration Plugin
+        const AIChatPlugin = {
+            name: 'AIChat',
+            async init(suite) {
+                this.suite = suite;
+                // Wait for panel to be created before adding to it
+                setTimeout(() => {
+                    this.createChatPanel();
+                }, 100);
+            },
+            
+            createChatPanel() {
+                // Add chat tab to the main panel
+                const header = document.querySelector('#redteam-panel > div:first-child');
+                const tabsContainer = document.createElement('div');
+                tabsContainer.style.cssText = `
+                    display: flex;
+                    gap: 10px;
+                    margin-bottom: 10px;
+                `;
+                
+                tabsContainer.innerHTML = `
+                    <button class="tab-btn active" data-tab="tree" style="background: #007acc; color: white; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px;">🌳 Tree</button>
+                    <button class="tab-btn" data-tab="chat" style="background: #333; color: #d4d4d4; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px;">🤖 AI Chat</button>
+                    <button class="tab-btn" data-tab="tools" style="background: #333; color: #d4d4d4; border: none; padding: 5px 10px; cursor: pointer; border-radius: 3px;">🔧 Tools</button>
+                `;
+                
+                header.appendChild(tabsContainer);
+                
+                // Create chat container
+                const chatContainer = document.createElement('div');
+                chatContainer.id = 'chat-container';
+                chatContainer.style.cssText = `
+                    display: none;
+                    flex-direction: column;
+                    height: 100%;
+                    padding: 15px;
+                `;
+                
+                chatContainer.innerHTML = `
+                    <div style="flex: 1; background: #1e1e1e; border-radius: 4px; padding: 10px; margin-bottom: 10px; overflow-y: auto; min-height: 400px;">
+                        <div id="chat-messages" style="color: #d4d4d4; font-family: monospace; font-size: 12px;">
+                            <div style="color: #888; margin-bottom: 10px;">🤖 AI Assistant ready! Describe what you need and I'll help update the tool.</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" id="chat-input" placeholder="Ask me to add features, fix issues, or analyze this page..." style="flex: 1; background: #1e1e1e; border: 1px solid #3e3e42; color: #d4d4d4; padding: 8px; border-radius: 4px;">
+                        <button id="chat-send" style="background: #007acc; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer;">Send</button>
+                    </div>
+                `;
+                
+                // Create tools container
+                const toolsContainer = document.createElement('div');
+                toolsContainer.id = 'tools-container';
+                toolsContainer.style.cssText = `
+                    display: none;
+                    padding: 15px;
+                `;
+                
+                toolsContainer.innerHTML = `
+                    <h3 style="color: #007acc; margin-bottom: 15px;">🔧 Available Tools</h3>
+                    <div style="display: grid; gap: 10px;">
+                        <button class="tool-btn" data-tool="export" style="background: #2d2d30; color: #d4d4d4; border: 1px solid #3e3e42; padding: 10px; cursor: pointer; border-radius: 4px; text-align: left;">
+                            📤 Export Data - Download collected intelligence
+                        </button>
+                        <button class="tool-btn" data-tool="analyze" style="background: #2d2d30; color: #d4d4d4; border: 1px solid #3e3e42; padding: 10px; cursor: pointer; border-radius: 4px; text-align: left;">
+                            🔍 Analyze Page - Deep scan current page
+                        </button>
+                        <button class="tool-btn" data-tool="clear" style="background: #2d2d30; color: #d4d4d4; border: 1px solid #3e3e42; padding: 10px; cursor: pointer; border-radius: 4px; text-align: left;">
+                            🗑️ Clear Data - Remove all stored intelligence
+                        </button>
+                        <button class="tool-btn" data-tool="inject" style="background: #2d2d30; color: #d4d4d4; border: 1px solid #3e3e42; padding: 10px; cursor: pointer; border-radius: 4px; text-align: left;">
+                            💉 Inject Tool - Add custom functionality
+                        </button>
+                    </div>
+                `;
+                
+                // Add containers to panel
+                const treeContainer = document.querySelector('#redteam-panel .tree-container').parentElement;
+                treeContainer.appendChild(chatContainer);
+                treeContainer.appendChild(toolsContainer);
+                
+                // Setup tab switching
+                this.setupTabInteractions();
+                
+                // Setup chat functionality
+                this.setupChatFunctionality();
+                
+                // Setup tool buttons
+                this.setupToolButtons();
+            },
+            
+            setupTabInteractions() {
+                document.querySelectorAll('.tab-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const tab = e.target.dataset.tab;
+                        
+                        // Update button styles
+                        document.querySelectorAll('.tab-btn').forEach(b => {
+                            b.style.background = '#333';
+                            b.style.color = '#d4d4d4';
+                        });
+                        e.target.style.background = '#007acc';
+                        e.target.style.color = 'white';
+                        
+                        // Show/hide containers
+                        document.querySelector('#redteam-panel .tree-container').parentElement.style.display = 
+                            tab === 'tree' ? 'flex' : 'none';
+                        document.getElementById('chat-container').style.display = 
+                            tab === 'chat' ? 'flex' : 'none';
+                        document.getElementById('tools-container').style.display = 
+                            tab === 'tools' ? 'block' : 'none';
+                    });
+                });
+            },
+            
+            setupChatFunctionality() {
+                const input = document.getElementById('chat-input');
+                const sendBtn = document.getElementById('chat-send');
+                const messages = document.getElementById('chat-messages');
+                
+                const sendMessage = () => {
+                    const message = input.value.trim();
+                    if (!message) return;
+                    
+                    // Add user message
+                    const userMsg = document.createElement('div');
+                    userMsg.style.cssText = 'margin-bottom: 10px; color: #4ec9b0;';
+                    userMsg.innerHTML = `<strong>You:</strong> ${message}`;
+                    messages.appendChild(userMsg);
+                    
+                    // Simulate AI response
+                    const aiMsg = document.createElement('div');
+                    aiMsg.style.cssText = 'margin-bottom: 10px; color: #d4d4d4;';
+                    
+                    // Analyze the request and provide helpful response
+                    let response = this.generateAIResponse(message);
+                    aiMsg.innerHTML = `<strong>AI:</strong> ${response}`;
+                    messages.appendChild(aiMsg);
+                    
+                    // Scroll to bottom
+                    messages.scrollTop = messages.scrollHeight;
+                    
+                    input.value = '';
+                };
+                
+                sendBtn.addEventListener('click', sendMessage);
+                input.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') sendMessage();
+                });
+            },
+            
+            generateAIResponse(message) {
+                const lowerMessage = message.toLowerCase();
+                
+                if (lowerMessage.includes('export') || lowerMessage.includes('download')) {
+                    return 'I can help you export the collected data! Click the "Tools" tab and use the "Export Data" button to download all domain intelligence as JSON.';
+                }
+                
+                if (lowerMessage.includes('analyze') || lowerMessage.includes('scan')) {
+                    return 'Page analysis ready! Go to the "Tools" tab and click "Analyze Page" to perform a deep scan of the current site for vulnerabilities, APIs, and security patterns.';
+                }
+                
+                if (lowerMessage.includes('add') || lowerMessage.includes('feature')) {
+                    return 'Feature addition detected! Use the "Inject Tool" button in the Tools tab to add custom functionality. You can also describe the specific feature you want and I\'ll help implement it.';
+                }
+                
+                if (lowerMessage.includes('vulnerability') || lowerMessage.includes('security')) {
+                    return 'Security analysis available! The suite can detect XSS vulnerabilities, exposed APIs, authentication bypasses, and more. Try the "Analyze Page" tool for a comprehensive security assessment.';
+                }
+                
+                if (lowerMessage.includes('performance') || lowerMessage.includes('crash')) {
+                    return 'Performance optimization built-in! The suite uses LRU caching, virtual scrolling, and smart data pruning to prevent crashes. Data is automatically managed to stay within safe memory limits.';
+                }
+                
+                return `I understand you want to: "${message}". This Red Team Suite can help with that! Try using the Tools tab for specific actions, or describe what you'd like to accomplish and I'll suggest the best approach.`;
+            },
+            
+            setupToolButtons() {
+                document.querySelectorAll('.tool-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const tool = e.target.dataset.tool;
+                        this.executeTool(tool);
+                    });
+                });
+            },
+            
+            executeTool(tool) {
+                switch (tool) {
+                    case 'export':
+                        this.exportData();
+                        break;
+                    case 'analyze':
+                        this.analyzePage();
+                        break;
+                    case 'clear':
+                        this.clearData();
+                        break;
+                    case 'inject':
+                        this.injectTool();
+                        break;
+                }
+            },
+            
+            exportData() {
+                const data = GM_getValue('redteam_data', {});
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `redteam-data-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                
+                this.showNotification('📤 Data exported successfully!');
+            },
+            
+            analyzePage() {
+                const analysis = {
+                    url: window.location.href,
+                    timestamp: Date.now(),
+                    elements: document.querySelectorAll('*').length,
+                    forms: document.querySelectorAll('form').length,
+                    inputs: document.querySelectorAll('input').length,
+                    scripts: document.querySelectorAll('script').length,
+                    links: document.querySelectorAll('a').length,
+                    images: document.querySelectorAll('img').length
+                };
+                
+                // Store analysis
+                const domain = window.location.hostname;
+                const path = window.location.pathname;
+                this.suite.persistence.store(domain, path, {
+                    analysis: analysis,
+                    type: 'page_analysis'
+                });
+                
+                this.showNotification(`🔍 Analysis complete: ${analysis.elements} elements, ${analysis.forms} forms found`);
+            },
+            
+            clearData() {
+                if (confirm('Are you sure you want to clear all collected data? This cannot be undone.')) {
+                    GM_setValue('redteam_data', {});
+                    this.suite.persistence.cache.clear();
+                    this.showNotification('🗑️ All data cleared successfully!');
+                    
+                    // Refresh tree view
+                    this.suite.visualizer.loadDomainData();
+                }
+            },
+            
+            injectTool() {
+                const toolCode = prompt('Enter JavaScript code to inject (will be executed immediately):');
+                if (toolCode) {
+                    try {
+                        eval(toolCode);
+                        this.showNotification('💉 Code injected successfully!');
+                    } catch (error) {
+                        this.showNotification(`❌ Injection failed: ${error.message}`, 'error');
+                    }
+                }
+            },
+            
+            showNotification(message, type = 'success') {
+                const notification = document.createElement('div');
+                notification.style.cssText = `
+                    position: fixed;
+                    top: 100px;
+                    right: 20px;
+                    background: ${type === 'error' ? '#ff4444' : '#007acc'};
+                    color: white;
+                    padding: 15px;
+                    border-radius: 4px;
+                    z-index: 10001;
+                    max-width: 300px;
+                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+                `;
+                notification.textContent = message;
+                
+                document.body.appendChild(notification);
+                
+                setTimeout(() => {
+                    notification.remove();
+                }, 3000);
+            }
+        };
+        
+        // Register plugins
+        window.redTeamSuite.registerPlugin(DataCollectorPlugin);
+        window.redTeamSuite.registerPlugin(AIChatPlugin);
+        
+        // Auto-initialize when page loads
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                window.redTeamSuite.initialize();
+            });
+        } else {
+            window.redTeamSuite.initialize();
+        }
+        
+        console.log('🎯 Advanced Red Team Suite with plugins loaded');
+    </script>
+
+    <!-- Load the userscript -->
+    <script src="Cleus_Ultimate_Credit_Bypass_v2.0.user.js"></script>
+    
+    <script>
+        let testResults = {};
+        let userscriptLoaded = false;
+        
+        // Enhanced logging function
+        function log(message, type = 'info', data = null) {
+            const results = document.getElementById('test-results');
+            const timestamp = new Date().toLocaleTimeString();
+            const dataStr = data ? ` | Data: ${JSON.stringify(data)}` : '';
+            results.textContent += `[${timestamp}] ${type.toUpperCase()}: ${message}${dataStr}\n`;
+            results.scrollTop = results.scrollHeight;
+            
+            // Also log to console for VS Code debugging
+            console.log(`[${timestamp}] ${type.toUpperCase()}: ${message}`, data || '');
+        }
+        
+        // Update debug information
+        function updateDebugInfo() {
+            const debugDiv = document.getElementById('debug-info');
+            const info = {
+                'BypassTester Available': typeof window.BypassTester !== 'undefined',
+                'CreditBypass Available': typeof window.CreditBypass !== 'undefined',
+                'Logger Available': typeof window.CleusLogger !== 'undefined',
+                'GM Functions': {
+                    'GM_setValue': typeof window.GM_setValue !== 'undefined',
+                    'GM_getValue': typeof window.GM_getValue !== 'undefined',
+                    'GM_xmlhttpRequest': typeof window.GM_xmlhttpRequest !== 'undefined',
+                    'GM_addStyle': typeof window.GM_addStyle !== 'undefined',
+                    'GM_notification': typeof window.GM_notification !== 'undefined'
+                },
+                'Environment': {
+                    'Firebase': typeof window.firebase !== 'undefined',
+                    'React': typeof window.React !== 'undefined',
+                    'ServiceWorker': 'serviceWorker' in navigator,
+                    'LocalStorage': typeof Storage !== 'undefined'
+                }
+            };
+            
+            debugDiv.innerHTML = `<pre>${JSON.stringify(info, null, 2)}</pre>`;
+        }
+        
+        // Display test results with enhanced formatting
+        function displayResults(results) {
+            const resultsDiv = document.getElementById('test-results');
+            resultsDiv.innerHTML = '<h3 class="section-title">🧪 Test Results</h3>';
+            
+            Object.entries(results).forEach(([test, result]) => {
+                const statusClass = result.toLowerCase().includes('pass') ? 'pass' :
+                                   result.toLowerCase().includes('fail') ? 'fail' :
+                                   result.toLowerCase().includes('skip') ? 'skip' : 'error';
+                
+                resultsDiv.innerHTML += `
+                    <div class="status ${statusClass}">
+                        <strong>${test.toUpperCase()}:</strong> ${result}
+                    </div>
+                `;
+            });
+            
+            // Also log to console for VS Code debugging
+            console.table(results);
+            log('Test results displayed', 'info', results);
+        }
+        
+        // Run all tests with error handling
+        async function runAllTests() {
+            const btn = document.getElementById('runAllBtn');
+            btn.disabled = true;
+            btn.textContent = 'Running...';
+            
+            try {
+                if (!userscriptLoaded) {
+                    log('❌ Userscript not loaded yet', 'error');
+                    return;
+                }
+                
+                if (typeof window.BypassTester === 'undefined') {
+                    log('❌ BypassTester not found. Userscript failed to load properly.', 'error');
+                    return;
+                }
+                
+                log('🧪 Running all tests...', 'info');
+                const results = await window.BypassTester.runTests();
+                displayResults(results);
+                log('✅ All tests completed', 'success');
+                
+            } catch (error) {
+                log('❌ Test execution failed: ' + error.message, 'error');
+                console.error('Test execution error:', error);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Run All Tests';
+            }
+        }
+        
+        // Run individual test with error handling
+        async function runIndividualTest(testName) {
+            if (!userscriptLoaded) {
+                log('❌ Userscript not loaded yet', 'error');
+                return;
+            }
+            
+            if (typeof window.BypassTester === 'undefined') {
+                log('❌ BypassTester not found. Userscript not loaded?', 'error');
+                return;
+            }
+            
+            log(`🧪 Running ${testName} test...`, 'info');
+            try {
+                // Fix method naming to match userscript (DOM, API are all caps)
+                let methodName;
+                if (testName === 'dom') {
+                    methodName = 'testDOM';
+                } else if (testName === 'api') {
+                    methodName = 'testAPI';
+                } else {
+                    methodName = 'test' + testName.charAt(0).toUpperCase() + testName.slice(1);
+                }
+                
+                const result = await window.BypassTester[methodName]();
+                log(`✅ ${testName}: ${result}`, 'success');
+                testResults[testName] = result;
+                displayResults(testResults);
+            } catch (error) {
+                log(`❌ ${testName} failed: ${error.message}`, 'error');
+                console.error(`Individual test ${testName} error:`, error);
+                testResults[testName] = 'ERROR: ' + error.message;
+                displayResults(testResults);
+            }
+        }
+        
+        function clearResults() {
+            document.getElementById('test-results').innerHTML = 'Test results will appear here...';
+            testResults = {};
+            log('Results cleared', 'info');
+        }
+        
+        // Check if userscript loaded
+        function checkUserscriptLoaded() {
+            const statusDiv = document.getElementById('status');
+            
+            if (typeof window.BypassTester !== 'undefined') {
+                userscriptLoaded = true;
+                statusDiv.innerHTML = '✅ Userscript loaded successfully - Ready for testing!';
+                statusDiv.className = 'status pass';
+                log('✅ Userscript loaded and ready', 'success');
+                updateDebugInfo();
+            } else {
+                statusDiv.innerHTML = '❌ Userscript failed to load - Check console for errors';
+                statusDiv.className = 'status error';
+                log('❌ Userscript failed to load', 'error');
+            }
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            log('🔧 Test environment loaded', 'info');
+            log('📝 Waiting for userscript to load...', 'info');
+            
+            // Wait a bit for the userscript to load
+            setTimeout(checkUserscriptLoaded, 2000);
+            
+            // Update debug info periodically
+            setInterval(updateDebugInfo, 5000);
+        });
+        
+        // Global error handler
+        window.addEventListener('error', function(event) {
+            log('Global error: ' + event.message, 'error', {
+                filename: event.filename,
+                lineno: event.lineno,
+                colno: event.colno
+            });
+        });
+        
+        // Make functions available globally for debugging
+        window.testRunner = {
+            runAllTests,
+            runIndividualTest,
+            clearResults,
+            log,
+            updateDebugInfo
+        };
+    </script>
+</body>
+</html>
